@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestor de Contraseñas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef4ff',
+              100: '#dae6ff',
+              200: '#bdd4ff',
+              400: '#6fa3ff',
+              500: '#3b7ddb',
+              600: '#2a5fad',
+              700: '#1e4a8a',
+            },
+            surface: {
+              50: '#f8fafc',
+              100: '#f1f5f9',
+              200: '#e2e8f0',
+              300: '#cbd5e1',
+              400: '#94a3b8',
+              500: '#64748b',
+              600: '#475569',
+              700: '#334155',
+              800: '#1e293b',
+              900: '#0f172a',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+</head>
+<body class="min-h-screen bg-surface-50 font-sans text-surface-800 flex items-center justify-center px-4 py-8">
+
+  <main class="w-full max-w-md">
+
+    <!-- Header -->
+    <div class="text-center mb-6">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-brand-500 mb-4 shadow-lg shadow-brand-500/25">
+        <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold text-surface-900 text-balance">Gestor de Contraseñas</h1>
+      <p class="text-sm text-surface-500 mt-1">Contraseñas únicas y seguras para tus cuentas.</p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-white rounded-2xl shadow-xl shadow-surface-900/5 border border-surface-200 p-6 sm:p-8">
+
+      <form id="passForm" class="flex flex-col gap-5" onsubmit="event.preventDefault(); generatePassword();">
+
+        <!-- Servicio -->
+        <div class="flex flex-col gap-1.5">
+          <label for="service" class="text-sm font-medium text-surface-700">Servicio</label>
+          <input
+            type="text"
+            id="service"
+            placeholder="Ej: Gmail, Facebook, etc."
+            autocomplete="off"
+            class="w-full rounded-xl border border-surface-300 bg-surface-50 px-4 py-3 text-sm text-surface-800 placeholder:text-surface-400
+                   outline-none transition
+                   focus:border-brand-500 focus:ring-2 focus:ring-brand-200 focus:bg-white"
+          >
+        </div>
+
+        <!-- Usuario -->
+        <div class="flex flex-col gap-1.5">
+          <label for="user" class="text-sm font-medium text-surface-700">Usuario</label>
+          <input
+            type="text"
+            id="user"
+            placeholder="Nombre de usuario"
+            autocomplete="off"
+            class="w-full rounded-xl border border-surface-300 bg-surface-50 px-4 py-3 text-sm text-surface-800 placeholder:text-surface-400
+                   outline-none transition
+                   focus:border-brand-500 focus:ring-2 focus:ring-brand-200 focus:bg-white"
+          >
+        </div>
+
+        <!-- Clave maestra -->
+        <div class="flex flex-col gap-1.5">
+          <label for="master" class="text-sm font-medium text-surface-700">Clave maestra</label>
+          <div class="relative">
+            <input
+              type="password"
+              id="master"
+              placeholder="La madre de todas tus contraseñas"
+              class="w-full rounded-xl border border-surface-300 bg-surface-50 px-4 py-3 pr-12 text-sm text-surface-800 placeholder:text-surface-400
+                     outline-none transition
+                     focus:border-brand-500 focus:ring-2 focus:ring-brand-200 focus:bg-white"
+            >
+            <button
+              type="button"
+              onclick="togglePassword()"
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 transition p-1"
+              aria-label="Mostrar u ocultar contraseña"
+            >
+              <svg id="eyeIcon" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Boton -->
+        <button
+          type="submit"
+          class="w-full rounded-xl bg-brand-500 px-4 py-3.5 text-sm font-semibold text-white shadow-md shadow-brand-500/25
+                 transition active:scale-[0.98]
+                 hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-200 focus:ring-offset-2
+                 mt-1"
+        >
+          Generar contraseña
+        </button>
+      </form>
+
+      <!-- Resultado -->
+      <div id="result"
+        class="mt-6 hidden rounded-xl border border-brand-200 bg-brand-50 p-4 text-center transition-all"
+      >
+        <p class="text-xs font-medium text-brand-600 mb-2 uppercase tracking-wider">Tu contraseña generada</p>
+        <div class="flex items-center justify-center gap-3">
+          <code id="resultText" class="font-mono text-lg font-medium text-surface-900 break-all select-all"></code>
+          <button
+            type="button"
+            onclick="copyPassword()"
+            class="flex-shrink-0 rounded-lg bg-white border border-brand-200 p-2 text-brand-500 hover:bg-brand-100 hover:text-brand-700 transition"
+            aria-label="Copiar contraseña"
+          >
+            <svg id="copyIcon" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"/>
+            </svg>
+            <svg id="checkIcon" class="w-4 h-4 hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <p class="text-center text-xs text-surface-400 mt-6">
+      Creado por <a href="https://github.com/Francho2002" class="text-brand-500 hover:underline">Francho2002</a>,
+      para mi hermosa mamá <span class="inline-block align-middle text-red-500">❤️</span>
+    </p>
+
+  </main>
+
+  <script>
+    function togglePassword() {
+      const input = document.getElementById('master');
+      const isPassword = input.type === 'password';
+      input.type = isPassword ? 'text' : 'password';
+    }
+
+    async function sha256(text) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(text);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function generatePassword() {
+      let service = document.getElementById('service').value.trim().toLowerCase();
+      let user = document.getElementById('user').value.trim().toLowerCase();
+      const master = document.getElementById('master').value;
+
+      if (!service || !user || !master) {
+        // Marcar campos vacios
+        ['service', 'user', 'master'].forEach(id => {
+          const el = document.getElementById(id);
+          if (!el.value.trim()) {
+            el.classList.add('border-red-400', 'ring-2', 'ring-red-100');
+            el.addEventListener('input', () => {
+              el.classList.remove('border-red-400', 'ring-2', 'ring-red-100');
+            }, { once: true });
+          }
+        });
+        return;
+      }
+
+      const combined = `${service}:${user}:${master}`;
+      const hash = await sha256(combined);
+
+      const specials = '!@#$%^&*()-_=+[]{};:,.<>?';
+      let password = '';
+      for (let i = 0; i < 16; i++) {
+        const hexPair = hash.substr(i * 4, 4);
+        const num = parseInt(hexPair, 16);
+        if (i % 4 === 0) {
+          password += String.fromCharCode(65 + (num % 26));
+        } else if (i % 4 === 1) {
+          password += String.fromCharCode(97 + (num % 26));
+        } else if (i % 4 === 2) {
+          password += String.fromCharCode(48 + (num % 10));
+        } else {
+          password += specials[num % specials.length];
+        }
+      }
+
+      const resultDiv = document.getElementById('result');
+      const resultText = document.getElementById('resultText');
+      resultText.textContent = password;
+      resultDiv.classList.remove('hidden');
+    }
+
+    async function copyPassword() {
+      const password = document.getElementById('resultText').textContent;
+      await navigator.clipboard.writeText(password);
+
+      const copyIcon = document.getElementById('copyIcon');
+      const checkIcon = document.getElementById('checkIcon');
+      copyIcon.classList.add('hidden');
+      checkIcon.classList.remove('hidden');
+
+      setTimeout(() => {
+        copyIcon.classList.remove('hidden');
+        checkIcon.classList.add('hidden');
+      }, 2000);
+    }
+  </script>
+
+</body>
+</html>
