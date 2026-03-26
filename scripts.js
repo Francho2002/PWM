@@ -1,12 +1,7 @@
 // scripts.js
-// Autocompletar campos si hay datos guardados
+// Autocompletar solo la clave maestra si está guardada
 document.addEventListener('DOMContentLoaded', () => {
-  const savedUser = localStorage.getItem('username');
   const savedMaster = localStorage.getItem('masterKey');
-  if (savedUser) {
-    const userInput = document.getElementById('user');
-    if (userInput) userInput.value = savedUser;
-  }
   if (savedMaster) {
     const masterInput = document.getElementById('master');
     if (masterInput) masterInput.value = savedMaster;
@@ -32,8 +27,7 @@ async function generatePassword() {
   let user = document.getElementById('user').value.trim().toLowerCase();
   const master = document.getElementById('master').value;
 
-  // Guardar usuario y clave maestra en localStorage
-  localStorage.setItem('username', user);
+  // Guardar solo la clave maestra en localStorage
   localStorage.setItem('masterKey', master);
 
   if (!service || !user || !master) {
