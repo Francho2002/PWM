@@ -167,6 +167,20 @@
   </main>
 
   <script>
+    // Autocompletar campos si hay datos guardados
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedUser = localStorage.getItem('username');
+      const savedMaster = localStorage.getItem('masterKey');
+      if (savedUser) {
+        const userInput = document.getElementById('user');
+        if (userInput) userInput.value = savedUser;
+      }
+      if (savedMaster) {
+        const masterInput = document.getElementById('master');
+        if (masterInput) masterInput.value = savedMaster;
+      }
+    });
+
     function togglePassword() {
       const input = document.getElementById('master');
       const isPassword = input.type === 'password';
@@ -185,6 +199,10 @@
       let service = document.getElementById('service').value.trim().toLowerCase();
       let user = document.getElementById('user').value.trim().toLowerCase();
       const master = document.getElementById('master').value;
+
+      // Guardar usuario y clave maestra en localStorage
+      localStorage.setItem('username', user);
+      localStorage.setItem('masterKey', master);
 
       if (!service || !user || !master) {
         // Marcar campos vacios
