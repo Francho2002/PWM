@@ -45,8 +45,9 @@ const BACKUP_REMINDERS = Object.freeze({
     text: 'Cambiaste la clave maestra. Es necesario exportar la bóveda a tu USB ahora: las copias previas sólo abrirán con la clave anterior.',
   },
   usb: {
-    title: 'Actualizá tu respaldo USB',
-    text: 'Cambiaste la llave USB. Es necesario exportar la bóveda ahora; sin una copia nueva, la llave actual no abrirá tus respaldos.',
+    title: 'Es necesario exportar la bóveda ahora',
+    text: 'Cambiaste la llave USB. Guardá una copia nueva en tu USB.',
+    criticalText: 'Sin una copia nueva, tu llave actual no abrirá tus respaldos.',
   },
   migration: {
     title: 'Copia urgente requerida',
@@ -603,7 +604,17 @@ function updateBackupReminder() {
   $('exportButton').classList.toggle('backup-due', needsBackup);
   if (needsBackup) {
     $('backupReminderTitle').textContent = reminder.title;
-    $('backupReminderText').textContent = reminder.text;
+    const text = $('backupReminderText');
+    text.replaceChildren();
+    const lead = document.createElement('span');
+    lead.textContent = reminder.text;
+    text.append(lead);
+    if (reminder.criticalText) {
+      const critical = document.createElement('strong');
+      critical.className = 'backup-reminder-critical';
+      critical.textContent = reminder.criticalText;
+      text.append(critical);
+    }
     $('exportButton').setAttribute('aria-describedby', 'backupReminder');
   } else {
     $('exportButton').removeAttribute('aria-describedby');
