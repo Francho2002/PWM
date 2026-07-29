@@ -883,6 +883,7 @@ async function start() {
   $('exportButton').addEventListener('click', downloadBackup);
   $('importButton').addEventListener('click', () => $('importInput').click());
   $('showImportFromLock').addEventListener('click', () => $('importInput').click());
+  $('showImportFromSetup').addEventListener('click', () => $('importInput').click());
   $('importInput').addEventListener('change', importBackup);
   ['click', 'keydown', 'touchstart'].forEach(
     (eventName) => document.addEventListener(eventName, resetAutoLock),
