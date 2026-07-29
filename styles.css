@@ -61,13 +61,16 @@ textarea { resize: vertical; }
 .button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 .danger-quiet { border: 0; background: transparent; color: #a1312d; font-weight: 750; padding: .65rem .3rem; }
 .text-button { width: fit-content; border: 0; background: transparent; color: #1d4ed8; padding: .4rem 0; font-size: .84rem; font-weight: 700; text-decoration: underline; text-underline-offset: .16rem; }
+.icon-text-button { display: inline-flex; align-items: center; gap: .35rem; }
 .lock-secondary-actions { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; }
 .import-prompt { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-top: .15rem; padding-top: .9rem; border-top: 1px solid #e5e7eb; color: #667085; font-size: .82rem; }
 .import-prompt .text-button { flex-shrink: 0; }
 
-.vault-toolbar { align-items: flex-end; justify-content: space-between; gap: 1rem; margin: 1.35rem 0 1rem; }
+.vault-toolbar { align-items: flex-start; flex-direction: column; gap: .8rem; margin: 1.35rem 0 1rem; }
 .vault-toolbar h1 { font-size: clamp(1.6rem, 5vw, 2rem); }
-.toolbar-actions { flex-wrap: wrap; justify-content: flex-end; gap: .45rem; }
+.toolbar-actions { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: .65rem 1rem; }
+.toolbar-group { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; }
+.vault-session-actions { margin-left: auto; }
 .toolbar-actions .button { min-height: 2.45rem; padding: .5rem .7rem; }
 #exportButton.backup-due { border-color: #d97706; background: #fffbeb; color: #92400e; box-shadow: 0 0 0 3px #f59e0b30; }
 #exportButton.backup-due:hover { border-color: #b45309; background: #fef3c7; }
@@ -155,8 +158,10 @@ textarea { resize: vertical; }
   .theme-toggle span:last-child { display: none; }
   .status-pill { padding: .4rem .55rem; }
   .screen.narrow { margin: 1.5rem auto; }
-  .vault-toolbar { align-items: flex-start; flex-direction: column; margin-top: 1rem; }
+  .vault-toolbar { margin-top: 1rem; }
   .toolbar-actions { width: 100%; justify-content: flex-start; }
+  .toolbar-group { width: 100%; }
+  .vault-session-actions { margin-left: 0; border-top: 1px solid #e1e4e8; padding-top: .45rem; }
   .toolbar-actions .button { flex: 1 1 auto; min-height: 2.75rem; }
   .vault-grid { display: flex; flex-direction: column; gap: .75rem; }
   .entries-panel, .entry-editor { width: 100%; }
@@ -172,4 +177,8 @@ textarea { resize: vertical; }
   .card-button.copy-button { grid-column: 1 / -1; width: 100%; }
   .modal-actions { flex-direction: column-reverse; }
   .modal-actions .button { width: 100%; }
+}
+
+@media (max-width: 760px) {
+  :root[data-theme="dark"] .vault-session-actions { border-color: #2b3139; }
 }

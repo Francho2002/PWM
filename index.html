@@ -86,7 +86,7 @@
           <button id="createVaultButton" class="button primary" type="submit">Crear bóveda</button>
           <div class="import-prompt">
             <span>¿Ya tenés una copia cifrada?</span>
-            <button id="showImportFromSetup" class="text-button" type="button">Importar una copia</button>
+            <button id="showImportFromSetup" class="text-button icon-text-button" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar bóveda</button>
           </div>
           <button id="cancelSetupButton" class="text-button hidden" type="button">Volver a mis bóvedas</button>
         </form>
@@ -107,12 +107,12 @@
             <input id="unlockMaster" type="password" autocomplete="current-password" required autofocus placeholder="Tu clave maestra">
           </label>
           <button class="button primary" type="submit">Desbloquear</button>
-          <button id="unlockUsbKeyButton" class="button secondary" type="button">Entrar con archivo USB</button>
-          <p id="unlockUsbKeyHelper" class="helper">Seleccioná el archivo y PWM encontrará automáticamente su bóveda. La clave maestra sigue funcionando como respaldo.</p>
+          <button id="unlockUsbKeyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Importar clave</button>
+          <p id="unlockUsbKeyHelper" class="helper">Elegí el archivo llave desde tu pendrive. PWM encontrará automáticamente su bóveda.</p>
         </form>
         <div class="lock-secondary-actions">
           <button id="newVaultButton" class="text-button" type="button">Crear otra bóveda</button>
-          <button id="showImportFromLock" class="text-button" type="button">Importar una copia cifrada</button>
+          <button id="showImportFromLock" class="text-button icon-text-button" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar bóveda</button>
         </div>
       </div>
     </section>
@@ -124,13 +124,17 @@
           <h1 id="currentVaultName">Mi bóveda</h1>
         </div>
         <div class="toolbar-actions">
-          <button id="changeMasterButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-key"></use></svg>Cambiar clave maestra</button>
-          <button id="usbKeyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Archivo llave USB</button>
-          <button id="exportButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-download"></use></svg>Exportar</button>
-          <button id="importButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar</button>
-          <button id="switchVaultButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-switch"></use></svg>Cambiar bóveda</button>
-          <button id="deleteVaultButton" class="button danger-quiet" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-trash"></use></svg>Borrar bóveda</button>
-          <button id="lockButton" class="button danger-quiet" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-lock"></use></svg>Bloquear</button>
+          <div class="toolbar-group">
+            <button id="changeMasterButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-key"></use></svg>Cambiar clave maestra</button>
+            <button id="usbKeyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Archivo llave USB</button>
+            <button id="exportButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-download"></use></svg>Exportar</button>
+            <button id="importButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar</button>
+            <button id="switchVaultButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-switch"></use></svg>Cambiar bóveda</button>
+          </div>
+          <div class="toolbar-group vault-session-actions">
+            <button id="deleteVaultButton" class="button danger-quiet" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-trash"></use></svg>Borrar bóveda</button>
+            <button id="lockButton" class="button danger-quiet" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-lock"></use></svg>Bloquear</button>
+          </div>
         </div>
       </div>
 
