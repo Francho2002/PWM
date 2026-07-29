@@ -23,7 +23,7 @@ const PASSWORD_CHARACTER_GROUPS = Object.freeze({
 });
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VAULT_AS_KEY_MESSAGE = 'Ese archivo es una bóveda, no una llave USB. Usá “Importar bóveda”.';
-const KEY_AS_VAULT_MESSAGE = 'Ese archivo es una llave USB, no una bóveda. Usá “Importar clave”.';
+const KEY_AS_VAULT_MESSAGE = 'Ese archivo es una llave USB, no una bóveda. Usá “Importar llave”.';
 const BACKUP_REMINDERS = Object.freeze({
   credentials: {
     title: 'Copia urgente requerida',
