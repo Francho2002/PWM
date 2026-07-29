@@ -14,6 +14,7 @@ const USB_KEY_FORMAT = 'pwm-usb-key';
 const USB_KEY_VERSION = 1;
 const USB_KEY_MAX_BYTES = 16 * 1024;
 const DEK_BYTES = 32;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const state = {
   key: null,
@@ -311,6 +312,24 @@ async function writeValues(entries) {
   });
 }
 
+async function writeAndDeleteValues(entries, keys) {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    entries.forEach(([key, value]) => store.put(value, key));
+    keys.forEach((key) => store.delete(key));
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
+  });
+}
+
 function vaultRecordKey(vaultId) {
   return `${VAULT_RECORD_PREFIX}${vaultId}`;
 }
@@ -348,13 +367,16 @@ function validWrap(wrap, exact = true) {
   );
 }
 
+function validUuid(value) {
+  return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
 function validUsbUnlock(value) {
   return Boolean(
     value
     && typeof value === 'object'
     && Object.keys(value).length === 3
-    && typeof value.keyId === 'string'
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.keyId)
+    && validUuid(value.keyId)
     && validWrap(value, false),
   );
 }
@@ -368,8 +390,7 @@ function validateUsbKeyFile(value) {
   if (
     value.format !== USB_KEY_FORMAT
     || value.version !== USB_KEY_VERSION
-    || typeof value.keyId !== 'string'
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.keyId)
+    || !validUuid(value.keyId)
     || !hasBase64Length(value.secret, DEK_BYTES)
   ) {
     throw new Error('Archivo llave inválido');
@@ -392,14 +413,35 @@ function validateVaultIndex(index) {
   );
 }
 
+function ensureVaultUids(index) {
+  const usedUids = new Set();
+  let changed = false;
+  const vaults = index.vaults.map((vault) => {
+    let uid = vault.uid;
+    if (!validUuid(uid) || usedUids.has(uid)) {
+      uid = crypto.randomUUID();
+      changed = true;
+    }
+    usedUids.add(uid);
+    return uid === vault.uid ? vault : { ...vault, uid };
+  });
+  return {
+    index: changed ? { ...index, vaults } : index,
+    changed,
+  };
+}
+
 async function loadVaultIndex() {
   const storedIndex = await readValue(INDEX_KEY);
   if (validateVaultIndex(storedIndex)) {
-    state.index = storedIndex;
+    const normalized = ensureVaultUids(storedIndex);
+    state.index = normalized.index;
+    let changed = normalized.changed;
     if (!state.index.vaults.some((vault) => vault.id === state.index.activeVaultId)) {
       state.index.activeVaultId = state.index.vaults[0]?.id ?? null;
-      await writeValues([[INDEX_KEY, state.index]]);
+      changed = true;
     }
+    if (changed) await writeValues([[INDEX_KEY, state.index]]);
     return;
   }
 
@@ -416,6 +458,7 @@ async function loadVaultIndex() {
     activeVaultId: vaultId,
     vaults: [{
       id: vaultId,
+      uid: crypto.randomUUID(),
       name: 'Mi bóveda',
       createdAt,
       updatedAt: legacyRecord.updatedAt || createdAt,
@@ -434,12 +477,8 @@ function vaultNameExists(name) {
   );
 }
 
-function uniqueVaultName(preferredName) {
-  const base = String(preferredName || 'Bóveda importada').trim().slice(0, 60) || 'Bóveda importada';
-  if (!vaultNameExists(base)) return base;
-  let counter = 2;
-  while (vaultNameExists(`${base} (${counter})`)) counter += 1;
-  return `${base} (${counter})`;
+function cleanImportedVaultName(preferredName) {
+  return String(preferredName || 'Bóveda importada').trim().slice(0, 60) || 'Bóveda importada';
 }
 
 function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
@@ -461,25 +500,12 @@ function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
   refreshUsbUnlockAvailability();
 }
 
-async function refreshUsbUnlockAvailability() {
-  const vaultId = $('vaultSelect').value;
+function refreshUsbUnlockAvailability() {
   const button = $('unlockUsbKeyButton');
   const helper = $('unlockUsbKeyHelper');
-  button.classList.add('hidden');
-  helper.classList.add('hidden');
-  if (!vaultId) return;
-
-  try {
-    const record = await readValue(vaultRecordKey(vaultId));
-    if ($('vaultSelect').value !== vaultId) return;
-    const available = validateVaultRecord(record)
-      && record.version === 2
-      && validUsbUnlock(record.usbUnlock);
-    button.classList.toggle('hidden', !available);
-    helper.classList.toggle('hidden', !available);
-  } catch (_) {
-    // La clave maestra sigue disponible aunque no se pueda comprobar el archivo llave.
-  }
+  const available = state.index.vaults.length > 0;
+  button.classList.toggle('hidden', !available);
+  helper.classList.toggle('hidden', !available);
 }
 
 function updateVaultMetadata(index, vaultId, name, updatedAt) {
@@ -719,7 +745,13 @@ async function createVault(event) {
       activeVaultId: vaultId,
       vaults: [
         ...state.index.vaults,
-        { id: vaultId, name: vaultName, createdAt, updatedAt: createdAt },
+        {
+          id: vaultId,
+          uid: crypto.randomUUID(),
+          name: vaultName,
+          createdAt,
+          updatedAt: createdAt,
+        },
       ],
     };
     await writeValues([
@@ -819,19 +851,29 @@ async function unlockWithUsbKey(event) {
   const [file] = event.target.files;
   event.target.value = '';
   if (!file) return;
-  const vaultId = $('vaultSelect').value;
-  const metadata = state.index.vaults.find((vault) => vault.id === vaultId);
-  if (!vaultId || !metadata) return;
 
   let usbKey;
   let pendingKeyBytes;
   try {
-    const record = await readValue(vaultRecordKey(vaultId));
-    if (!validateVaultRecord(record) || record.version !== 2 || !validUsbUnlock(record.usbUnlock)) {
-      throw new Error('Esta bóveda no tiene archivo llave configurado');
-    }
     usbKey = await readUsbKeyFile(file);
-    if (usbKey.keyId !== record.usbUnlock.keyId) throw new Error('Archivo llave incorrecto');
+    const matches = [];
+    for (const metadata of state.index.vaults) {
+      const record = await readValue(vaultRecordKey(metadata.id));
+      if (
+        validateVaultRecord(record)
+        && record.version === 2
+        && validUsbUnlock(record.usbUnlock)
+        && record.usbUnlock.keyId === usbKey.keyId
+      ) {
+        matches.push({ metadata, record });
+      }
+    }
+
+    if (!matches.length) throw new Error('El archivo llave no corresponde a ninguna bóveda de este navegador.');
+    if (matches.length > 1) throw new Error('El archivo llave coincide con varias bóvedas duplicadas.');
+
+    const [{ metadata, record }] = matches;
+    const vaultId = metadata.id;
     const key = await importAesKey(usbKey.secret);
     const keyBytes = await unwrapDek(key, record.usbUnlock, aad('usb-wrap', usbKey.keyId));
     pendingKeyBytes = keyBytes;
@@ -844,9 +886,16 @@ async function unlockWithUsbKey(event) {
     showNotice(`Bóveda “${metadata.name}” desbloqueada con el archivo llave.`);
   } catch (error) {
     pendingKeyBytes?.fill(0);
-    showNotice(error.message === 'Esta bóveda no tiene archivo llave configurado'
-      ? error.message
-      : 'El archivo llave no corresponde o la bóveda está dañada.', 'error');
+    const knownMessages = [
+      'El archivo llave no corresponde a ninguna bóveda de este navegador.',
+      'El archivo llave coincide con varias bóvedas duplicadas.',
+    ];
+    showNotice(
+      knownMessages.includes(error.message)
+        ? error.message
+        : 'El archivo llave no corresponde o la bóveda está dañada.',
+      'error',
+    );
   } finally {
     usbKey?.secret.fill(0);
   }
@@ -861,6 +910,10 @@ function lockVault(expired = false) {
   if ($('usbKeyDialog').open) {
     $('usbKeyForm').reset();
     $('usbKeyDialog').close();
+  }
+  if ($('deleteVaultDialog').open) {
+    $('deleteVaultForm').reset();
+    $('deleteVaultDialog').close();
   }
   state.key = null;
   if (state.keyBytes) state.keyBytes.fill(0);
@@ -941,9 +994,15 @@ function safeFileName(name) {
 
 function downloadBackup() {
   if (!state.record || !state.vaultId) return;
+  const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+  if (!metadata || !validUuid(metadata.uid)) {
+    showNotice('No pude identificar esta bóveda para exportarla.', 'error');
+    return;
+  }
   const backup = {
     format: 'pwm-vault-backup',
-    version: 2,
+    version: 3,
+    vaultUid: metadata.uid,
     name: state.vaultName,
     exportedAt: new Date().toISOString(),
     vault: state.record,
@@ -962,6 +1021,7 @@ function downloadBackup() {
 function extractBackup(value, fileName) {
   if (validateVaultRecord(value)) {
     return {
+      uid: null,
       name: fileName.replace(/(\.pwm)?\.json$/i, '') || 'Bóveda importada',
       record: value,
     };
@@ -969,15 +1029,53 @@ function extractBackup(value, fileName) {
   if (
     value
     && value.format === 'pwm-vault-backup'
-    && value.version === 2
+    && (value.version === 2 || value.version === 3)
+    && (value.version !== 3 || validUuid(value.vaultUid))
     && validateVaultRecord(value.vault)
   ) {
     return {
+      uid: validUuid(value.vaultUid) ? value.vaultUid : null,
       name: typeof value.name === 'string' ? value.name : 'Bóveda importada',
       record: value.vault,
     };
   }
   throw new Error('Formato no válido');
+}
+
+async function vaultIdentityFingerprint(record) {
+  const stableRecord = {
+    version: record.version,
+    salt: record.salt,
+    passwordWrap: record.passwordWrap
+      ? { iv: record.passwordWrap.iv, wrappedKey: record.passwordWrap.wrappedKey }
+      : null,
+  };
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    encoder.encode(JSON.stringify(stableRecord)),
+  );
+  return base64FromBytes(new Uint8Array(digest));
+}
+
+async function duplicateVaultReason(backup, vaultName) {
+  if (vaultNameExists(vaultName)) {
+    return `Ya existe una bóveda llamada “${vaultName}”.`;
+  }
+  if (backup.uid && state.index.vaults.some((vault) => vault.uid === backup.uid)) {
+    return 'Esa bóveda ya está guardada en este navegador.';
+  }
+
+  const importedFingerprint = await vaultIdentityFingerprint(backup.record);
+  for (const metadata of state.index.vaults) {
+    const record = await readValue(vaultRecordKey(metadata.id));
+    if (
+      validateVaultRecord(record)
+      && await vaultIdentityFingerprint(record) === importedFingerprint
+    ) {
+      return 'Esa copia cifrada ya fue importada.';
+    }
+  }
+  return '';
 }
 
 async function importBackup(event) {
@@ -988,11 +1086,18 @@ async function importBackup(event) {
   try {
     const parsed = JSON.parse(await file.text());
     const backup = extractBackup(parsed, file.name);
+    const vaultName = cleanImportedVaultName(backup.name);
+    const duplicateReason = await duplicateVaultReason(backup, vaultName);
+    if (duplicateReason) {
+      showNotice(duplicateReason, 'error');
+      return;
+    }
+
     const vaultId = crypto.randomUUID();
-    const vaultName = uniqueVaultName(backup.name);
     const createdAt = backup.record.createdAt || new Date().toISOString();
     const metadata = {
       id: vaultId,
+      uid: backup.uid || crypto.randomUUID(),
       name: vaultName,
       createdAt,
       updatedAt: backup.record.updatedAt || createdAt,
@@ -1013,7 +1118,7 @@ async function importBackup(event) {
       state.index.activeVaultId = vaultId;
       setScreen('unlock');
     }
-    showNotice(`“${vaultName}” se importó como una bóveda nueva. No se reemplazó ninguna.`);
+    showNotice(`“${vaultName}” se importó como una bóveda nueva.`);
   } catch (_) {
     showNotice('No pude leer esa copia cifrada.', 'error');
   }
@@ -1108,6 +1213,58 @@ async function disableUsbKey() {
     showNotice('El desbloqueo con archivo llave fue desactivado.');
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude desactivar el archivo llave.', 'error');
+  }
+}
+
+function syncDeleteVaultConfirmation() {
+  $('confirmDeleteVaultButton').disabled = $('deleteVaultConfirmation').value.trim() !== state.vaultName;
+}
+
+function openDeleteVaultDialog() {
+  if (!state.vaultId || !state.vaultName) return;
+  $('deleteVaultForm').reset();
+  $('deleteVaultName').textContent = state.vaultName;
+  syncDeleteVaultConfirmation();
+  $('deleteVaultDialog').showModal();
+  $('deleteVaultConfirmation').focus();
+  resetAutoLock();
+}
+
+function closeDeleteVaultDialog() {
+  $('deleteVaultForm').reset();
+  if ($('deleteVaultDialog').open) $('deleteVaultDialog').close();
+  resetAutoLock();
+}
+
+async function deleteCurrentVault(event) {
+  event.preventDefault();
+  if (!state.vaultId || $('deleteVaultConfirmation').value.trim() !== state.vaultName) {
+    syncDeleteVaultConfirmation();
+    return;
+  }
+
+  const deletedVaultId = state.vaultId;
+  const deletedVaultName = state.vaultName;
+  const remainingVaults = state.index.vaults.filter((vault) => vault.id !== deletedVaultId);
+  const nextIndex = {
+    ...state.index,
+    activeVaultId: remainingVaults[0]?.id ?? null,
+    vaults: remainingVaults,
+  };
+
+  try {
+    await writeAndDeleteValues(
+      [[INDEX_KEY, nextIndex]],
+      [vaultRecordKey(deletedVaultId)],
+    );
+    state.index = nextIndex;
+    closeDeleteVaultDialog();
+    lockVault();
+    showNotice(
+      `Bóveda “${deletedVaultName}” borrada de este navegador. Las copias exportadas no se borraron.`,
+    );
+  } catch (_) {
+    showNotice('No pude borrar la bóveda de este navegador.', 'error');
   }
 }
 
@@ -1246,6 +1403,15 @@ async function start() {
   $('usbKeyDialog').addEventListener('cancel', (event) => {
     event.preventDefault();
     closeUsbKeyDialog();
+  });
+
+  $('deleteVaultButton').addEventListener('click', openDeleteVaultDialog);
+  $('deleteVaultForm').addEventListener('submit', deleteCurrentVault);
+  $('deleteVaultConfirmation').addEventListener('input', syncDeleteVaultConfirmation);
+  $('cancelDeleteVault').addEventListener('click', closeDeleteVaultDialog);
+  $('deleteVaultDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeDeleteVaultDialog();
   });
 
   $('exportButton').addEventListener('click', downloadBackup);

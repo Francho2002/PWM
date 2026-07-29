@@ -76,8 +76,8 @@
             <input id="unlockMaster" type="password" autocomplete="current-password" required autofocus placeholder="Tu clave maestra">
           </label>
           <button class="button primary" type="submit">Desbloquear</button>
-          <button id="unlockUsbKeyButton" class="button secondary hidden" type="button">Desbloquear con archivo llave</button>
-          <p id="unlockUsbKeyHelper" class="helper hidden">Elegí el archivo llave desde tu pendrive. La clave maestra sigue funcionando como respaldo.</p>
+          <button id="unlockUsbKeyButton" class="button secondary" type="button">Entrar con archivo USB</button>
+          <p id="unlockUsbKeyHelper" class="helper">Seleccioná el archivo y PWM encontrará automáticamente su bóveda. La clave maestra sigue funcionando como respaldo.</p>
         </form>
         <div class="lock-secondary-actions">
           <button id="newVaultButton" class="text-button" type="button">Crear otra bóveda</button>
@@ -98,6 +98,7 @@
           <button id="exportButton" class="button secondary" type="button">Exportar</button>
           <button id="importButton" class="button secondary" type="button">Importar</button>
           <button id="switchVaultButton" class="button secondary" type="button">Cambiar bóveda</button>
+          <button id="deleteVaultButton" class="button danger-quiet" type="button">Borrar bóveda</button>
           <button id="lockButton" class="button danger-quiet" type="button">Bloquear</button>
         </div>
       </div>
@@ -210,6 +211,24 @@
           <button id="cancelUsbKey" class="button secondary" type="button">Cancelar</button>
           <button id="disableUsbKeyButton" class="button secondary hidden" type="button">Desactivar</button>
           <button class="button primary" type="submit">Crear o reemplazar archivo</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="deleteVaultDialog" class="modal">
+      <form id="deleteVaultForm" class="stack" novalidate>
+        <div>
+          <p class="eyebrow">Eliminar del dispositivo</p>
+          <h2>Borrar bóveda</h2>
+          <p class="helper">Se eliminará esta bóveda de este navegador. Las copias exportadas y los archivos USB seguirán existiendo.</p>
+        </div>
+        <label>
+          <span>Escribí <strong id="deleteVaultName"></strong> para confirmar</span>
+          <input id="deleteVaultConfirmation" type="text" autocomplete="off" required>
+        </label>
+        <div class="modal-actions">
+          <button id="cancelDeleteVault" class="button secondary" type="button">Cancelar</button>
+          <button id="confirmDeleteVaultButton" class="button danger" type="submit" disabled>Borrar definitivamente</button>
         </div>
       </form>
     </dialog>

@@ -54,6 +54,9 @@ textarea { resize: vertical; }
 .button.primary:hover { background: #1e40af; }
 .button.secondary { border-color: #cbd2dc; background: #fff; color: #374151; }
 .button.secondary:hover { border-color: #94a3b8; background: #f8fafc; }
+.button.danger { background: #b42318; color: #fff; }
+.button.danger:hover { background: #912018; }
+.button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 .danger-quiet { border: 0; background: transparent; color: #a1312d; font-weight: 750; padding: .65rem .3rem; }
 .text-button { width: fit-content; border: 0; background: transparent; color: #1d4ed8; padding: .4rem 0; font-size: .84rem; font-weight: 700; text-decoration: underline; text-underline-offset: .16rem; }
 .lock-secondary-actions { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; }
