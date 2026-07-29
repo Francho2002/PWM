@@ -23,9 +23,16 @@ Podés crear varias bóvedas independientes. Cada una tiene su propio nombre y s
 
 Desde una bóveda abierta también podés elegir **Borrar bóveda**. La eliminación exige escribir su nombre exacto y sólo borra la copia de ese navegador: las exportaciones y los archivos llave USB continúan existiendo.
 
+### Historial cifrado
+
+**Mostrar historial** permite revisar los cambios importantes de cada bóveda: contraseñas agregadas, actualizadas o eliminadas, cambios de clave maestra y creación o desactivación de llaves USB. El historial forma parte del contenido cifrado de la bóveda y viaja con sus copias exportadas.
+
+PWM no guarda en el historial las contraseñas, los nombres de usuario ni acciones como copiar, mostrar, desbloquear o exportar. Se conservan los últimos 200 movimientos para evitar que la bóveda crezca indefinidamente. Las bóvedas creadas con versiones anteriores comienzan con un historial vacío y registran los cambios nuevos.
+
 ## Protección aplicada
 
 - El contenido se guarda cifrado en IndexedDB, no en texto plano.
+- El historial de movimientos se cifra junto con las credenciales; no se almacena como un registro separado en texto plano.
 - Cada bóveda nueva usa una clave aleatoria de datos (DEK) de 256 bits para cifrar el contenido con AES-256-GCM y un IV nuevo cada vez que se guarda.
 - La DEK se envuelve con una clave derivada de la clave maestra mediante PBKDF2-HMAC-SHA-256 y 600.000 iteraciones. La clave maestra no se guarda.
 - Opcionalmente, la misma DEK puede envolverse con el secreto aleatorio de un archivo llave. Los contextos de cifrado separan contenido, clave maestra y archivo llave.

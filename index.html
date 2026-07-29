@@ -26,8 +26,9 @@
     <symbol id="icon-upload" viewBox="0 0 24 24">
       <path d="M12 15V3m-4 4 4-4 4 4M5 20h14"></path>
     </symbol>
-    <symbol id="icon-switch" viewBox="0 0 24 24">
-      <path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"></path>
+    <symbol id="icon-history" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8"></circle>
+      <path d="M12 8v4l3 2M5.8 5.8 4 4m0 0v4m0-4h4"></path>
     </symbol>
     <symbol id="icon-trash" viewBox="0 0 24 24">
       <path d="M4 7h16m-10-3h4l1 3M7 7l1 13h8l1-13M10 11v5m4-5v5"></path>
@@ -128,7 +129,7 @@
             <button id="usbKeyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Archivo llave USB</button>
             <button id="exportButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-download"></use></svg>Exportar</button>
             <button id="importButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar</button>
-            <button id="switchVaultButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-switch"></use></svg>Cambiar bóveda</button>
+            <button id="historyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-history"></use></svg>Mostrar historial</button>
           </div>
           <div class="toolbar-group vault-session-actions">
             <button id="deleteVaultButton" class="button danger-quiet" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-trash"></use></svg>Borrar bóveda</button>
@@ -281,6 +282,20 @@
           <button id="confirmDeleteVaultButton" class="button danger" type="submit" disabled>Borrar definitivamente</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="historyDialog" class="modal history-modal" aria-labelledby="historyTitle">
+      <div class="stack">
+        <div>
+          <p class="eyebrow">Actividad cifrada</p>
+          <h2 id="historyTitle">Historial de la bóveda</h2>
+          <p class="helper">Registra cambios importantes, pero nunca contraseñas ni acciones como copiar o mostrar. Se conservan los últimos 200 movimientos dentro de la bóveda cifrada.</p>
+        </div>
+        <div id="historyList" class="history-list" aria-live="polite"></div>
+        <div class="modal-actions">
+          <button id="closeHistoryButton" class="button primary" type="button">Cerrar</button>
+        </div>
+      </div>
     </dialog>
   </main>
   <script src="scripts.js"></script>

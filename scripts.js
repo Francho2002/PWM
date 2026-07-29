@@ -15,6 +15,17 @@ const USB_KEY_VERSION = 1;
 const USB_KEY_MAX_BYTES = 16 * 1024;
 const DEK_BYTES = 32;
 const GENERATED_PASSWORD_LENGTH = 20;
+const HISTORY_LIMIT = 200;
+const HISTORY_TYPES = new Set([
+  'vault-created',
+  'vault-migrated',
+  'credential-created',
+  'credential-updated',
+  'credential-deleted',
+  'master-password-changed',
+  'usb-key-created',
+  'usb-key-disabled',
+]);
 const PASSWORD_CHARACTER_GROUPS = Object.freeze({
   uppercase: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
   lowercase: 'abcdefghijkmnopqrstuvwxyz',
@@ -47,6 +58,7 @@ const state = {
   key: null,
   keyBytes: null,
   entries: [],
+  history: [],
   record: null,
   vaultId: null,
   vaultName: '',
@@ -598,11 +610,17 @@ function updateBackupReminder() {
   }
 }
 
-async function saveVault(backupReason = 'credentials') {
+async function saveVault(backupReason = 'credentials', historyEvent = null) {
   if (!state.key || !state.keyBytes || !state.record || state.record.version !== 2 || !state.vaultId) {
     throw new Error('Bóveda bloqueada');
   }
-  const encrypted = await encryptPayloadV2(state.key, { entries: state.entries });
+  const nextHistory = historyEvent
+    ? historyWithEvent(state.history, historyEvent)
+    : state.history;
+  const encrypted = await encryptPayloadV2(state.key, {
+    entries: state.entries,
+    history: nextHistory,
+  });
   const updatedAt = new Date().toISOString();
   const nextRecord = { ...state.record, ...encrypted, updatedAt };
   const nextIndex = updateVaultMetadata(
@@ -617,6 +635,7 @@ async function saveVault(backupReason = 'credentials') {
     [INDEX_KEY, nextIndex],
   ]);
   state.record = nextRecord;
+  state.history = nextHistory;
   state.index = nextIndex;
   renderVaultSelect(state.vaultId);
   resetAutoLock();
@@ -633,6 +652,103 @@ function normalizeEntry(entry) {
     createdAt: entry.createdAt || new Date().toISOString(),
     updatedAt: entry.updatedAt || new Date().toISOString(),
   };
+}
+
+function normalizeHistoryEvent(event) {
+  if (!event || typeof event !== 'object' || !HISTORY_TYPES.has(event.type)) return null;
+  const date = new Date(event.createdAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return {
+    id: typeof event.id === 'string' && event.id ? event.id : crypto.randomUUID(),
+    type: event.type,
+    detail: String(event.detail ?? '').trim().slice(0, 120),
+    createdAt: date.toISOString(),
+  };
+}
+
+function normalizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map(normalizeHistoryEvent)
+    .filter(Boolean)
+    .slice(-HISTORY_LIMIT);
+}
+
+function createHistoryEvent(type, detail = '') {
+  return normalizeHistoryEvent({
+    id: crypto.randomUUID(),
+    type,
+    detail,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function historyWithEvent(history, event) {
+  const normalizedEvent = normalizeHistoryEvent(event);
+  if (!normalizedEvent) return normalizeHistory(history);
+  return [...normalizeHistory(history), normalizedEvent].slice(-HISTORY_LIMIT);
+}
+
+function historyEventLabel(event) {
+  const detail = event.detail ? ` — ${event.detail}` : '';
+  switch (event.type) {
+    case 'vault-created': return 'Bóveda creada';
+    case 'vault-migrated': return 'Bóveda actualizada al formato actual';
+    case 'credential-created': return `Contraseña agregada${detail}`;
+    case 'credential-updated': return `Contraseña actualizada${detail}`;
+    case 'credential-deleted': return `Contraseña eliminada${detail}`;
+    case 'master-password-changed': return 'Clave maestra actualizada';
+    case 'usb-key-created': return event.detail ? `Llave USB ${event.detail} creada` : 'Llave USB creada';
+    case 'usb-key-disabled': return 'Llave USB desactivada';
+    default: return 'Cambio en la bóveda';
+  }
+}
+
+function renderHistory() {
+  const list = $('historyList');
+  list.replaceChildren();
+  if (!state.history.length) {
+    const empty = document.createElement('p');
+    empty.className = 'history-empty';
+    empty.textContent = 'Esta bóveda todavía no tiene movimientos registrados. Los próximos cambios aparecerán acá.';
+    list.append(empty);
+    return;
+  }
+
+  const formatter = new Intl.DateTimeFormat('es-AR', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+  [...state.history].reverse().forEach((event) => {
+    const item = document.createElement('article');
+    item.className = 'history-item';
+    const marker = document.createElement('span');
+    marker.className = 'history-marker';
+    marker.setAttribute('aria-hidden', 'true');
+    const copy = document.createElement('div');
+    copy.className = 'history-copy';
+    const title = document.createElement('strong');
+    title.textContent = historyEventLabel(event);
+    const time = document.createElement('time');
+    time.dateTime = event.createdAt;
+    time.textContent = formatter.format(new Date(event.createdAt));
+    copy.append(title, time);
+    item.append(marker, copy);
+    list.append(item);
+  });
+}
+
+function openHistoryDialog() {
+  if (!state.vaultId) return;
+  renderHistory();
+  $('historyDialog').showModal();
+  $('closeHistoryButton').focus();
+  resetAutoLock();
+}
+
+function closeHistoryDialog() {
+  if ($('historyDialog').open) $('historyDialog').close();
+  resetAutoLock();
 }
 
 function randomPassword(groups) {
@@ -825,7 +941,13 @@ async function createVault(event) {
   try {
     const vaultId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-    const created = await createV2Record(master, { entries: [] }, createdAt);
+    const initialHistory = [
+      createHistoryEvent('vault-created'),
+    ];
+    const created = await createV2Record(master, {
+      entries: [],
+      history: initialHistory,
+    }, createdAt);
     const { record, key, keyBytes } = created;
     pendingKeyBytes = keyBytes;
     const nextIndex = {
@@ -855,6 +977,7 @@ async function createVault(event) {
     state.keyBytes = keyBytes;
     pendingKeyBytes = null;
     state.entries = [];
+    state.history = initialHistory;
     state.record = record;
     state.vaultId = vaultId;
     state.vaultName = vaultName;
@@ -891,6 +1014,13 @@ async function unlockVault(event) {
     if (record.version === 1) {
       const legacyKey = await deriveKey(master, bytesFromBase64(record.salt), record.iterations);
       payload = await decryptPayloadV1(legacyKey, record);
+      payload = {
+        entries: payload.entries,
+        history: historyWithEvent(
+          payload.history,
+          createHistoryEvent('vault-migrated'),
+        ),
+      };
       const next = await createV2Record(master, payload, record.createdAt || new Date().toISOString());
       record = next.record;
       key = next.key;
@@ -927,6 +1057,7 @@ function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payloa
   state.key = key;
   state.keyBytes = keyBytes;
   state.entries = payload.entries.map(normalizeEntry);
+  state.history = normalizeHistory(payload.history);
   state.record = record;
   state.vaultId = vaultId;
   state.vaultName = vaultName;
@@ -1025,10 +1156,12 @@ function lockVault(expired = false) {
     $('deleteVaultForm').reset();
     $('deleteVaultDialog').close();
   }
+  if ($('historyDialog').open) $('historyDialog').close();
   state.key = null;
   if (state.keyBytes) state.keyBytes.fill(0);
   state.keyBytes = null;
   state.entries = [];
+  state.history = [];
   state.record = null;
   state.vaultId = null;
   state.vaultName = '';
@@ -1065,17 +1198,25 @@ async function saveEntry(event) {
     createdAt: previous?.createdAt,
   });
 
+  const previousEntries = state.entries;
   try {
     state.entries = previous
       ? state.entries.map((item) => (item.id === id ? entry : item))
       : [...state.entries, entry];
-    await saveVault();
+    await saveVault(
+      'credentials',
+      createHistoryEvent(
+        previous ? 'credential-updated' : 'credential-created',
+        service,
+      ),
+    );
     clearEditor();
     renderEntries();
     showNotice(previous
       ? 'Cambios guardados. Hacé una copia urgente en tu USB: si perdés este navegador, podrías recuperar una versión anterior.'
       : 'Contraseña guardada. Hacé una copia urgente en tu USB: si perdés este navegador, podrías perder esta credencial.');
   } catch (_) {
+    state.entries = previousEntries;
     showNotice('No se pudo guardar el cambio.', 'error');
   }
 }
@@ -1083,13 +1224,18 @@ async function saveEntry(event) {
 async function deleteEntry(id) {
   const entry = state.entries.find((item) => item.id === id);
   if (!entry || !window.confirm(`¿Eliminar la contraseña de ${entry.service}?`)) return;
+  const previousEntries = state.entries;
   try {
     state.entries = state.entries.filter((item) => item.id !== id);
-    await saveVault();
+    await saveVault(
+      'credentials',
+      createHistoryEvent('credential-deleted', entry.service),
+    );
     if ($('entryId').value === id) clearEditor();
     renderEntries();
     showNotice('Contraseña eliminada. Actualizá la copia en tu USB ahora; si perdés este navegador, un respaldo anterior todavía podría contenerla.');
   } catch (_) {
+    state.entries = previousEntries;
     showNotice('No se pudo eliminar la contraseña.', 'error');
   }
 }
@@ -1298,9 +1444,16 @@ async function verifyCurrentMaster(masterPassword) {
   if (!matches) throw new Error('Clave maestra incorrecta');
 }
 
-async function persistCurrentRecord(nextRecord, metadataUpdates = {}) {
+async function persistCurrentRecord(nextRecord, metadataUpdates = {}, historyEvent = null) {
+  const nextHistory = historyEvent
+    ? historyWithEvent(state.history, historyEvent)
+    : state.history;
+  const encrypted = await encryptPayloadV2(state.key, {
+    entries: state.entries,
+    history: nextHistory,
+  });
   const updatedAt = new Date().toISOString();
-  const record = { ...nextRecord, updatedAt };
+  const record = { ...nextRecord, ...encrypted, updatedAt };
   const nextIndex = updateVaultMetadata(
     state.index,
     state.vaultId,
@@ -1317,6 +1470,7 @@ async function persistCurrentRecord(nextRecord, metadataUpdates = {}) {
     [INDEX_KEY, nextIndex],
   ]);
   state.record = record;
+  state.history = nextHistory;
   state.index = nextIndex;
   renderVaultSelect(state.vaultId);
 }
@@ -1360,6 +1514,7 @@ async function createOrReplaceUsbKey(event) {
     await persistCurrentRecord(
       { ...state.record, usbUnlock },
       { usbKeyVersion, backupReason: 'usb' },
+      createHistoryEvent('usb-key-created', `v${usbKeyVersion}`),
     );
     downloadJson(
       { format: USB_KEY_FORMAT, version: USB_KEY_VERSION, keyId, secret: base64FromBytes(secret) },
@@ -1379,7 +1534,11 @@ async function disableUsbKey() {
   if (!master) return showNotice('Ingresá tu clave maestra para desactivar el archivo llave.', 'error');
   try {
     await verifyCurrentMaster(master);
-    await persistCurrentRecord({ ...state.record, usbUnlock: null });
+    await persistCurrentRecord(
+      { ...state.record, usbUnlock: null },
+      {},
+      createHistoryEvent('usb-key-disabled'),
+    );
     closeUsbKeyDialog();
     showNotice('Llave USB desactivada. Exportá la bóveda a tu USB ahora para que el respaldo refleje este cambio.');
   } catch (_) {
@@ -1474,12 +1633,21 @@ async function changeMasterPassword(event) {
     const salt = newSalt();
     const newPasswordKey = await deriveKey(newMaster, salt, PBKDF2_ITERATIONS);
     const passwordWrap = await wrapDek(newPasswordKey, state.keyBytes, aad('password-wrap'));
+    const nextHistory = historyWithEvent(
+      state.history,
+      createHistoryEvent('master-password-changed'),
+    );
+    const encrypted = await encryptPayloadV2(state.key, {
+      entries: state.entries,
+      history: nextHistory,
+    });
     const updatedAt = new Date().toISOString();
     const nextRecord = {
       ...state.record,
       salt: base64FromBytes(salt),
       iterations: PBKDF2_ITERATIONS,
       passwordWrap,
+      ...encrypted,
       updatedAt,
     };
     const nextIndex = updateVaultMetadata(
@@ -1494,6 +1662,7 @@ async function changeMasterPassword(event) {
       [INDEX_KEY, nextIndex],
     ]);
     state.record = nextRecord;
+    state.history = nextHistory;
     state.index = nextIndex;
     updateBackupReminder();
     closeMasterChange();
@@ -1565,7 +1734,12 @@ async function start() {
   });
 
   $('lockButton').addEventListener('click', () => lockVault());
-  $('switchVaultButton').addEventListener('click', () => lockVault());
+  $('historyButton').addEventListener('click', openHistoryDialog);
+  $('closeHistoryButton').addEventListener('click', closeHistoryDialog);
+  $('historyDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeHistoryDialog();
+  });
   $('newVaultButton').addEventListener('click', () => showSetup(true));
   $('cancelSetupButton').addEventListener('click', () => {
     renderVaultSelect();
