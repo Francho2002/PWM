@@ -22,6 +22,8 @@ const PASSWORD_CHARACTER_GROUPS = Object.freeze({
   symbols: '!@#$%&*+-_=?.',
 });
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VAULT_AS_KEY_MESSAGE = 'Ese archivo es una bóveda, no una llave USB. Usá “Importar bóveda”.';
+const KEY_AS_VAULT_MESSAGE = 'Ese archivo es una llave USB, no una bóveda. Usá “Importar clave”.';
 
 const state = {
   key: null,
@@ -437,11 +439,21 @@ function ensureVaultMetadata(index) {
       ? vault.backupVersion
       : 0;
     const needsBackup = typeof vault.needsBackup === 'boolean' ? vault.needsBackup : false;
-    if (backupVersion !== vault.backupVersion || needsBackup !== vault.needsBackup) changed = true;
+    const usbKeyVersion = Number.isSafeInteger(vault.usbKeyVersion)
+      && vault.usbKeyVersion >= 0
+      && vault.usbKeyVersion < Number.MAX_SAFE_INTEGER
+      ? vault.usbKeyVersion
+      : 0;
+    if (
+      backupVersion !== vault.backupVersion
+      || usbKeyVersion !== vault.usbKeyVersion
+      || needsBackup !== vault.needsBackup
+    ) changed = true;
     return {
       ...vault,
       uid,
       backupVersion,
+      usbKeyVersion,
       needsBackup,
     };
   });
@@ -481,6 +493,7 @@ async function loadVaultIndex() {
       uid: crypto.randomUUID(),
       name: 'Mi bóveda',
       backupVersion: 0,
+      usbKeyVersion: 0,
       needsBackup: false,
       createdAt,
       updatedAt: legacyRecord.updatedAt || createdAt,
@@ -798,6 +811,7 @@ async function createVault(event) {
           uid: crypto.randomUUID(),
           name: vaultName,
           backupVersion: 0,
+          usbKeyVersion: 0,
           needsBackup: false,
           createdAt,
           updatedAt: createdAt,
@@ -897,10 +911,21 @@ function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payloa
 }
 
 async function readUsbKeyFile(file) {
-  if (!file || file.size <= 0 || file.size > USB_KEY_MAX_BYTES) throw new Error('Archivo llave inválido');
+  if (!file || file.size <= 0) throw new Error('Archivo llave inválido');
+  if (file.size > USB_KEY_MAX_BYTES) {
+    const prefix = await file.slice(0, 2048).text();
+    if (/"format"\s*:\s*"(?:pwm-vault-backup|pwm-local-vault)"/.test(prefix)) {
+      throw new Error(VAULT_AS_KEY_MESSAGE);
+    }
+    throw new Error('Archivo llave inválido');
+  }
   const text = await file.text();
   if (encoder.encode(text).byteLength > USB_KEY_MAX_BYTES) throw new Error('Archivo llave inválido');
-  return validateUsbKeyFile(JSON.parse(text));
+  const parsed = JSON.parse(text);
+  if (parsed?.format === 'pwm-vault-backup' || parsed?.format === 'pwm-local-vault') {
+    throw new Error(VAULT_AS_KEY_MESSAGE);
+  }
+  return validateUsbKeyFile(parsed);
 }
 
 async function unlockWithUsbKey(event) {
@@ -945,6 +970,7 @@ async function unlockWithUsbKey(event) {
     const knownMessages = [
       'El archivo llave no corresponde a ninguna bóveda de este navegador.',
       'El archivo llave coincide con varias bóvedas duplicadas.',
+      VAULT_AS_KEY_MESSAGE,
     ];
     showNotice(
       knownMessages.includes(error.message)
@@ -1074,6 +1100,7 @@ async function downloadBackup() {
       version: 3,
       vaultUid: metadata.uid,
       backupVersion,
+      usbKeyVersion: metadata.usbKeyVersion,
       name: state.vaultName,
       exportedAt: new Date().toISOString(),
       vault: state.record,
@@ -1103,6 +1130,7 @@ function extractBackup(value, fileName) {
     return {
       uid: null,
       backupVersion: 0,
+      usbKeyVersion: 0,
       name: fileName.replace(/(\.pwm)?\.json$/i, '') || 'Bóveda importada',
       record: value,
     };
@@ -1120,6 +1148,11 @@ function extractBackup(value, fileName) {
         && value.backupVersion >= 1
         && value.backupVersion < Number.MAX_SAFE_INTEGER
         ? value.backupVersion
+        : 0,
+      usbKeyVersion: Number.isSafeInteger(value.usbKeyVersion)
+        && value.usbKeyVersion >= 0
+        && value.usbKeyVersion < Number.MAX_SAFE_INTEGER
+        ? value.usbKeyVersion
         : 0,
       name: typeof value.name === 'string' ? value.name : 'Bóveda importada',
       record: value.vault,
@@ -1171,6 +1204,10 @@ async function importBackup(event) {
 
   try {
     const parsed = JSON.parse(await file.text());
+    if (parsed?.format === USB_KEY_FORMAT) {
+      showNotice(KEY_AS_VAULT_MESSAGE, 'error');
+      return;
+    }
     const backup = extractBackup(parsed, file.name);
     const vaultName = cleanImportedVaultName(backup.name);
     const duplicateReason = await duplicateVaultReason(backup, vaultName);
@@ -1186,6 +1223,7 @@ async function importBackup(event) {
       uid: backup.uid || crypto.randomUUID(),
       name: vaultName,
       backupVersion: backup.backupVersion,
+      usbKeyVersion: backup.usbKeyVersion,
       needsBackup: false,
       createdAt,
       updatedAt: backup.record.updatedAt || createdAt,
@@ -1231,7 +1269,7 @@ async function verifyCurrentMaster(masterPassword) {
   if (!matches) throw new Error('Clave maestra incorrecta');
 }
 
-async function persistCurrentRecord(nextRecord) {
+async function persistCurrentRecord(nextRecord, metadataUpdates = {}) {
   const updatedAt = new Date().toISOString();
   const record = { ...nextRecord, updatedAt };
   const nextIndex = updateVaultMetadata(
@@ -1239,7 +1277,7 @@ async function persistCurrentRecord(nextRecord) {
     state.vaultId,
     state.vaultName,
     updatedAt,
-    { needsBackup: true },
+    { ...metadataUpdates, needsBackup: true },
   );
   await writeValues([
     [vaultRecordKey(state.vaultId), record],
@@ -1276,6 +1314,9 @@ async function createOrReplaceUsbKey(event) {
   let secret;
   try {
     await verifyCurrentMaster(master);
+    const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+    if (!metadata) throw new Error('Bóveda no encontrada');
+    const usbKeyVersion = metadata.usbKeyVersion + 1;
     const keyId = crypto.randomUUID();
     secret = randomDek();
     const secretKey = await importAesKey(secret);
@@ -1283,13 +1324,13 @@ async function createOrReplaceUsbKey(event) {
       keyId,
       ...(await wrapDek(secretKey, state.keyBytes, aad('usb-wrap', keyId))),
     };
-    await persistCurrentRecord({ ...state.record, usbUnlock });
+    await persistCurrentRecord({ ...state.record, usbUnlock }, { usbKeyVersion });
     downloadJson(
       { format: USB_KEY_FORMAT, version: USB_KEY_VERSION, keyId, secret: base64FromBytes(secret) },
-      `${safeFileName(state.vaultName)}-llave-usb.json`,
+      `${safeFileName(state.vaultName)}-llave-v${usbKeyVersion}.json`,
     );
     closeUsbKeyDialog();
-    showNotice('Archivo llave creado. Exportá una nueva copia de la bóveda y guardá ambos archivos separados.');
+    showNotice(`Llave v${usbKeyVersion} creada. Ya funciona aquí; exportá la bóveda para que la nueva copia también la acepte.`);
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude crear el archivo llave.', 'error');
   } finally {
