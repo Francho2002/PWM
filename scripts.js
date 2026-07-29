@@ -24,6 +24,24 @@ const PASSWORD_CHARACTER_GROUPS = Object.freeze({
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VAULT_AS_KEY_MESSAGE = 'Ese archivo es una bóveda, no una llave USB. Usá “Importar bóveda”.';
 const KEY_AS_VAULT_MESSAGE = 'Ese archivo es una llave USB, no una bóveda. Usá “Importar clave”.';
+const BACKUP_REMINDERS = Object.freeze({
+  credentials: {
+    title: 'Copia urgente requerida',
+    text: 'Cambiaste contraseñas. Exportá la bóveda y guardá la copia nueva en tu USB ahora. Si perdés este navegador antes, podrías perder credenciales recientes.',
+  },
+  master: {
+    title: 'Actualizá tu respaldo antes de continuar',
+    text: 'Cambiaste la clave maestra. Es necesario exportar la bóveda a tu USB ahora: las copias previas sólo abrirán con la clave anterior.',
+  },
+  usb: {
+    title: 'Actualizá tu respaldo USB',
+    text: 'Cambiaste la llave USB. Es necesario exportar la bóveda ahora; sin una copia nueva, la llave actual no abrirá tus respaldos.',
+  },
+  migration: {
+    title: 'Copia urgente requerida',
+    text: 'La bóveda se actualizó. Exportá una copia nueva a tu USB para conservar un respaldo compatible.',
+  },
+});
 
 const state = {
   key: null,
@@ -444,9 +462,13 @@ function ensureVaultMetadata(index) {
       && vault.usbKeyVersion < Number.MAX_SAFE_INTEGER
       ? vault.usbKeyVersion
       : 0;
+    const backupReason = needsBackup
+      ? (BACKUP_REMINDERS[vault.backupReason] ? vault.backupReason : 'credentials')
+      : null;
     if (
       backupVersion !== vault.backupVersion
       || usbKeyVersion !== vault.usbKeyVersion
+      || backupReason !== vault.backupReason
       || needsBackup !== vault.needsBackup
     ) changed = true;
     return {
@@ -454,6 +476,7 @@ function ensureVaultMetadata(index) {
       uid,
       backupVersion,
       usbKeyVersion,
+      backupReason,
       needsBackup,
     };
   });
@@ -494,6 +517,7 @@ async function loadVaultIndex() {
       name: 'Mi bóveda',
       backupVersion: 0,
       usbKeyVersion: 0,
+      backupReason: null,
       needsBackup: false,
       createdAt,
       updatedAt: legacyRecord.updatedAt || createdAt,
@@ -562,16 +586,19 @@ function updateVaultMetadata(index, vaultId, name, updatedAt, updates = {}) {
 function updateBackupReminder() {
   const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
   const needsBackup = Boolean(state.vaultId && metadata?.needsBackup);
+  const reminder = BACKUP_REMINDERS[metadata?.backupReason] || BACKUP_REMINDERS.credentials;
   $('backupReminder').classList.toggle('hidden', !needsBackup);
   $('exportButton').classList.toggle('backup-due', needsBackup);
   if (needsBackup) {
+    $('backupReminderTitle').textContent = reminder.title;
+    $('backupReminderText').textContent = reminder.text;
     $('exportButton').setAttribute('aria-describedby', 'backupReminder');
   } else {
     $('exportButton').removeAttribute('aria-describedby');
   }
 }
 
-async function saveVault() {
+async function saveVault(backupReason = 'credentials') {
   if (!state.key || !state.keyBytes || !state.record || state.record.version !== 2 || !state.vaultId) {
     throw new Error('Bóveda bloqueada');
   }
@@ -583,7 +610,7 @@ async function saveVault() {
     state.vaultId,
     state.vaultName,
     updatedAt,
-    { needsBackup: true },
+    { needsBackup: true, backupReason },
   );
   await writeValues([
     [vaultRecordKey(state.vaultId), nextRecord],
@@ -812,6 +839,7 @@ async function createVault(event) {
           name: vaultName,
           backupVersion: 0,
           usbKeyVersion: 0,
+          backupReason: null,
           needsBackup: false,
           createdAt,
           updatedAt: createdAt,
@@ -881,7 +909,7 @@ async function unlockVault(event) {
       vaultId,
       metadata.name,
       record.updatedAt,
-      migrated ? { needsBackup: true } : {},
+      migrated ? { needsBackup: true, backupReason: 'migration' } : {},
     );
     const writes = [[INDEX_KEY, nextIndex]];
     if (migrated) writes.unshift([vaultRecordKey(vaultId), record]);
@@ -1045,8 +1073,8 @@ async function saveEntry(event) {
     clearEditor();
     renderEntries();
     showNotice(previous
-      ? 'Cambios guardados. Exportá una nueva copia para actualizar tu respaldo.'
-      : 'Contraseña guardada. Exportá una copia actualizada para tu USB.');
+      ? 'Cambios guardados. Hacé una copia urgente en tu USB: si perdés este navegador, podrías recuperar una versión anterior.'
+      : 'Contraseña guardada. Hacé una copia urgente en tu USB: si perdés este navegador, podrías perder esta credencial.');
   } catch (_) {
     showNotice('No se pudo guardar el cambio.', 'error');
   }
@@ -1060,7 +1088,7 @@ async function deleteEntry(id) {
     await saveVault();
     if ($('entryId').value === id) clearEditor();
     renderEntries();
-    showNotice('Contraseña eliminada. Exportá una nueva copia para actualizar tu respaldo.');
+    showNotice('Contraseña eliminada. Actualizá la copia en tu USB ahora; si perdés este navegador, un respaldo anterior todavía podría contenerla.');
   } catch (_) {
     showNotice('No se pudo eliminar la contraseña.', 'error');
   }
@@ -1093,7 +1121,7 @@ async function downloadBackup() {
       state.vaultId,
       state.vaultName,
       state.record.updatedAt,
-      { backupVersion, needsBackup: false },
+      { backupVersion, backupReason: null, needsBackup: false },
     );
     const backup = {
       format: 'pwm-vault-backup',
@@ -1224,6 +1252,7 @@ async function importBackup(event) {
       name: vaultName,
       backupVersion: backup.backupVersion,
       usbKeyVersion: backup.usbKeyVersion,
+      backupReason: null,
       needsBackup: false,
       createdAt,
       updatedAt: backup.record.updatedAt || createdAt,
@@ -1277,7 +1306,11 @@ async function persistCurrentRecord(nextRecord, metadataUpdates = {}) {
     state.vaultId,
     state.vaultName,
     updatedAt,
-    { ...metadataUpdates, needsBackup: true },
+    {
+      ...metadataUpdates,
+      backupReason: metadataUpdates.backupReason || 'usb',
+      needsBackup: true,
+    },
   );
   await writeValues([
     [vaultRecordKey(state.vaultId), record],
@@ -1324,13 +1357,16 @@ async function createOrReplaceUsbKey(event) {
       keyId,
       ...(await wrapDek(secretKey, state.keyBytes, aad('usb-wrap', keyId))),
     };
-    await persistCurrentRecord({ ...state.record, usbUnlock }, { usbKeyVersion });
+    await persistCurrentRecord(
+      { ...state.record, usbUnlock },
+      { usbKeyVersion, backupReason: 'usb' },
+    );
     downloadJson(
       { format: USB_KEY_FORMAT, version: USB_KEY_VERSION, keyId, secret: base64FromBytes(secret) },
       `${safeFileName(state.vaultName)}-llave-v${usbKeyVersion}.json`,
     );
     closeUsbKeyDialog();
-    showNotice(`Llave v${usbKeyVersion} creada. Ya funciona aquí; exportá la bóveda para que la nueva copia también la acepte.`);
+    showNotice(`Llave v${usbKeyVersion} creada. Es necesario exportar la bóveda a tu USB ahora: sin una copia nueva, esta llave no abrirá tus respaldos.`);
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude crear el archivo llave.', 'error');
   } finally {
@@ -1345,7 +1381,7 @@ async function disableUsbKey() {
     await verifyCurrentMaster(master);
     await persistCurrentRecord({ ...state.record, usbUnlock: null });
     closeUsbKeyDialog();
-    showNotice('Archivo llave desactivado. Exportá una nueva copia para actualizar tu respaldo.');
+    showNotice('Llave USB desactivada. Exportá la bóveda a tu USB ahora para que el respaldo refleje este cambio.');
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude desactivar el archivo llave.', 'error');
   }
@@ -1451,7 +1487,7 @@ async function changeMasterPassword(event) {
       state.vaultId,
       state.vaultName,
       updatedAt,
-      { needsBackup: true },
+      { needsBackup: true, backupReason: 'master' },
     );
     await writeValues([
       [vaultRecordKey(state.vaultId), nextRecord],
@@ -1461,7 +1497,7 @@ async function changeMasterPassword(event) {
     state.index = nextIndex;
     updateBackupReminder();
     closeMasterChange();
-    showNotice('Clave maestra actualizada. Exportá una nueva copia; las anteriores siguen usando la clave anterior.');
+    showNotice('Clave maestra actualizada. Es necesario exportar la bóveda a tu USB ahora: las copias previas sólo abrirán con la clave anterior.');
   } catch (_) {
     showNotice('La clave maestra actual no es correcta.', 'error');
   }

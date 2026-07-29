@@ -9,7 +9,7 @@ Una bóveda de contraseñas que funciona sin cuenta ni servidor. Los datos queda
 3. Guardá o generá una contraseña por cada servicio.
 4. Descargá una copia cifrada desde **Exportar** y guardala en un lugar seguro. Los archivos se numeran por bóveda, por ejemplo `personal-boveda-v1.pwm.json`, `personal-boveda-v2.pwm.json`, etc.
 
-Cuando agregás, modificás o eliminás una contraseña, PWM muestra un recordatorio y resalta **Exportar** hasta que descargues una nueva versión. También lo hace al cambiar la clave maestra o la configuración del archivo llave USB.
+Cuando agregás, modificás o eliminás una contraseña, PWM muestra un aviso urgente y resalta **Exportar** hasta que descargues una nueva versión para tu USB. Es necesario hacerlo: si perdés el navegador o el dispositivo antes, las copias anteriores no tendrán las credenciales recientes. Al cambiar la clave maestra, las copias previas sólo abrirán con la clave anterior; exportá una nueva inmediatamente.
 
 ### Archivo llave en pendrive (opcional)
 
