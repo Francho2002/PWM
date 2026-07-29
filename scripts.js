@@ -14,6 +14,13 @@ const USB_KEY_FORMAT = 'pwm-usb-key';
 const USB_KEY_VERSION = 1;
 const USB_KEY_MAX_BYTES = 16 * 1024;
 const DEK_BYTES = 32;
+const GENERATED_PASSWORD_LENGTH = 20;
+const PASSWORD_CHARACTER_GROUPS = Object.freeze({
+  uppercase: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
+  lowercase: 'abcdefghijkmnopqrstuvwxyz',
+  numbers: '23456789',
+  symbols: '!@#$%&*+-_=?.',
+});
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const state = {
@@ -75,6 +82,7 @@ function setScreen(name) {
     ? `Abierta · ${state.vaultName}`
     : 'Bloqueada';
   if (name === 'vault') $('currentVaultName').textContent = state.vaultName;
+  updateBackupReminder();
 }
 
 function showSetup(isAdditionalVault = false) {
@@ -413,7 +421,7 @@ function validateVaultIndex(index) {
   );
 }
 
-function ensureVaultUids(index) {
+function ensureVaultMetadata(index) {
   const usedUids = new Set();
   let changed = false;
   const vaults = index.vaults.map((vault) => {
@@ -423,7 +431,19 @@ function ensureVaultUids(index) {
       changed = true;
     }
     usedUids.add(uid);
-    return uid === vault.uid ? vault : { ...vault, uid };
+    const backupVersion = Number.isSafeInteger(vault.backupVersion)
+      && vault.backupVersion >= 0
+      && vault.backupVersion < Number.MAX_SAFE_INTEGER
+      ? vault.backupVersion
+      : 0;
+    const needsBackup = typeof vault.needsBackup === 'boolean' ? vault.needsBackup : false;
+    if (backupVersion !== vault.backupVersion || needsBackup !== vault.needsBackup) changed = true;
+    return {
+      ...vault,
+      uid,
+      backupVersion,
+      needsBackup,
+    };
   });
   return {
     index: changed ? { ...index, vaults } : index,
@@ -434,7 +454,7 @@ function ensureVaultUids(index) {
 async function loadVaultIndex() {
   const storedIndex = await readValue(INDEX_KEY);
   if (validateVaultIndex(storedIndex)) {
-    const normalized = ensureVaultUids(storedIndex);
+    const normalized = ensureVaultMetadata(storedIndex);
     state.index = normalized.index;
     let changed = normalized.changed;
     if (!state.index.vaults.some((vault) => vault.id === state.index.activeVaultId)) {
@@ -460,6 +480,8 @@ async function loadVaultIndex() {
       id: vaultId,
       uid: crypto.randomUUID(),
       name: 'Mi bóveda',
+      backupVersion: 0,
+      needsBackup: false,
       createdAt,
       updatedAt: legacyRecord.updatedAt || createdAt,
     }],
@@ -498,6 +520,7 @@ function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
     : state.index.vaults[0]?.id;
   if (selectedId) select.value = selectedId;
   refreshUsbUnlockAvailability();
+  updateBackupReminder();
 }
 
 function refreshUsbUnlockAvailability() {
@@ -508,14 +531,31 @@ function refreshUsbUnlockAvailability() {
   helper.classList.toggle('hidden', !available);
 }
 
-function updateVaultMetadata(index, vaultId, name, updatedAt) {
+function updateVaultMetadata(index, vaultId, name, updatedAt, updates = {}) {
   return {
     ...index,
     activeVaultId: vaultId,
     vaults: index.vaults.map((vault) => (
-      vault.id === vaultId ? { ...vault, name, updatedAt } : vault
+      vault.id === vaultId ? {
+        ...vault,
+        ...updates,
+        name,
+        updatedAt,
+      } : vault
     )),
   };
+}
+
+function updateBackupReminder() {
+  const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+  const needsBackup = Boolean(state.vaultId && metadata?.needsBackup);
+  $('backupReminder').classList.toggle('hidden', !needsBackup);
+  $('exportButton').classList.toggle('backup-due', needsBackup);
+  if (needsBackup) {
+    $('exportButton').setAttribute('aria-describedby', 'backupReminder');
+  } else {
+    $('exportButton').removeAttribute('aria-describedby');
+  }
 }
 
 async function saveVault() {
@@ -530,6 +570,7 @@ async function saveVault() {
     state.vaultId,
     state.vaultName,
     updatedAt,
+    { needsBackup: true },
   );
   await writeValues([
     [vaultRecordKey(state.vaultId), nextRecord],
@@ -554,21 +595,21 @@ function normalizeEntry(entry) {
   };
 }
 
-function randomPassword(length) {
-  const groups = [
-    'ABCDEFGHJKLMNPQRSTUVWXYZ',
-    'abcdefghijkmnopqrstuvwxyz',
-    '23456789',
-    '!@#$%&*+-_=?.',
-  ];
+function randomPassword(groups) {
   const characters = groups.join('');
   const result = groups.map((group) => secureCharacter(group));
-  while (result.length < length) result.push(secureCharacter(characters));
+  while (result.length < GENERATED_PASSWORD_LENGTH) result.push(secureCharacter(characters));
   for (let index = result.length - 1; index > 0; index -= 1) {
     const swapIndex = secureIndex(index + 1);
     [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
   }
   return result.join('');
+}
+
+function selectedPasswordGroups() {
+  return [...document.querySelectorAll('.character-toggle[aria-pressed="true"]')]
+    .map((button) => PASSWORD_CHARACTER_GROUPS[button.dataset.characterSet])
+    .filter(Boolean);
 }
 
 function secureCharacter(characters) {
@@ -653,15 +694,21 @@ function renderEntries() {
   matching.forEach((entry) => container.append(entryCard(entry)));
 }
 
+function setOptionalFieldsExpanded(expanded) {
+  $('optionalEntryFields').classList.toggle('hidden', !expanded);
+  $('toggleOptionalFields').setAttribute('aria-expanded', String(expanded));
+  $('optionalFieldsLabel').textContent = expanded ? 'Menos opciones' : 'Más opciones';
+}
+
 function clearEditor() {
   $('entryForm').reset();
   $('entryId').value = '';
-  $('passwordLength').value = '20';
   $('editorTitle').textContent = 'Agregar contraseña';
   $('saveButtonText').textContent = 'Guardar en la bóveda';
   $('cancelEditButton').classList.add('hidden');
   $('password').type = 'password';
   $('toggleEditorPassword').setAttribute('aria-label', 'Mostrar contraseña');
+  setOptionalFieldsExpanded(false);
 }
 
 function editEntry(id) {
@@ -673,6 +720,7 @@ function editEntry(id) {
   $('password').value = entry.password;
   $('website').value = entry.website;
   $('notes').value = entry.notes;
+  setOptionalFieldsExpanded(Boolean(entry.website || entry.notes));
   $('editorTitle').textContent = 'Editar contraseña';
   $('saveButtonText').textContent = 'Guardar cambios';
   $('cancelEditButton').classList.remove('hidden');
@@ -749,6 +797,8 @@ async function createVault(event) {
           id: vaultId,
           uid: crypto.randomUUID(),
           name: vaultName,
+          backupVersion: 0,
+          needsBackup: false,
           createdAt,
           updatedAt: createdAt,
         },
@@ -812,7 +862,13 @@ async function unlockVault(event) {
       key = await importAesKey(keyBytes);
       payload = await decryptPayloadV2(key, record);
     }
-    const nextIndex = updateVaultMetadata(state.index, vaultId, metadata.name, record.updatedAt);
+    const nextIndex = updateVaultMetadata(
+      state.index,
+      vaultId,
+      metadata.name,
+      record.updatedAt,
+      migrated ? { needsBackup: true } : {},
+    );
     const writes = [[INDEX_KEY, nextIndex]];
     if (migrated) writes.unshift([vaultRecordKey(vaultId), record]);
     await writeValues(writes);
@@ -962,7 +1018,9 @@ async function saveEntry(event) {
     await saveVault();
     clearEditor();
     renderEntries();
-    showNotice(previous ? 'Cambios guardados.' : 'Contraseña guardada en la bóveda.');
+    showNotice(previous
+      ? 'Cambios guardados. Exportá una nueva copia para actualizar tu respaldo.'
+      : 'Contraseña guardada. Exportá una copia actualizada para tu USB.');
   } catch (_) {
     showNotice('No se pudo guardar el cambio.', 'error');
   }
@@ -976,7 +1034,7 @@ async function deleteEntry(id) {
     await saveVault();
     if ($('entryId').value === id) clearEditor();
     renderEntries();
-    showNotice('Contraseña eliminada.');
+    showNotice('Contraseña eliminada. Exportá una nueva copia para actualizar tu respaldo.');
   } catch (_) {
     showNotice('No se pudo eliminar la contraseña.', 'error');
   }
@@ -992,36 +1050,59 @@ function safeFileName(name) {
     || 'boveda';
 }
 
-function downloadBackup() {
+async function downloadBackup() {
   if (!state.record || !state.vaultId) return;
   const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
   if (!metadata || !validUuid(metadata.uid)) {
     showNotice('No pude identificar esta bóveda para exportarla.', 'error');
     return;
   }
-  const backup = {
-    format: 'pwm-vault-backup',
-    version: 3,
-    vaultUid: metadata.uid,
-    name: state.vaultName,
-    exportedAt: new Date().toISOString(),
-    vault: state.record,
-  };
-  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${safeFileName(state.vaultName)}-${new Date().toISOString().slice(0, 10)}.pwm.json`;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  showNotice(`Copia cifrada de “${state.vaultName}” descargada.`);
-  resetAutoLock();
+  const button = $('exportButton');
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const backupVersion = metadata.backupVersion + 1;
+    const nextIndex = updateVaultMetadata(
+      state.index,
+      state.vaultId,
+      state.vaultName,
+      state.record.updatedAt,
+      { backupVersion, needsBackup: false },
+    );
+    const backup = {
+      format: 'pwm-vault-backup',
+      version: 3,
+      vaultUid: metadata.uid,
+      backupVersion,
+      name: state.vaultName,
+      exportedAt: new Date().toISOString(),
+      vault: state.record,
+    };
+    await writeValues([[INDEX_KEY, nextIndex]]);
+    state.index = nextIndex;
+    updateBackupReminder();
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${safeFileName(state.vaultName)}-boveda-v${backupVersion}.pwm.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    showNotice(`Copia cifrada v${backupVersion} de “${state.vaultName}” descargada.`);
+    resetAutoLock();
+  } catch (_) {
+    showNotice('No pude preparar la copia cifrada.', 'error');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function extractBackup(value, fileName) {
   if (validateVaultRecord(value)) {
     return {
       uid: null,
+      backupVersion: 0,
       name: fileName.replace(/(\.pwm)?\.json$/i, '') || 'Bóveda importada',
       record: value,
     };
@@ -1035,6 +1116,11 @@ function extractBackup(value, fileName) {
   ) {
     return {
       uid: validUuid(value.vaultUid) ? value.vaultUid : null,
+      backupVersion: Number.isSafeInteger(value.backupVersion)
+        && value.backupVersion >= 1
+        && value.backupVersion < Number.MAX_SAFE_INTEGER
+        ? value.backupVersion
+        : 0,
       name: typeof value.name === 'string' ? value.name : 'Bóveda importada',
       record: value.vault,
     };
@@ -1099,6 +1185,8 @@ async function importBackup(event) {
       id: vaultId,
       uid: backup.uid || crypto.randomUUID(),
       name: vaultName,
+      backupVersion: backup.backupVersion,
+      needsBackup: false,
       createdAt,
       updatedAt: backup.record.updatedAt || createdAt,
     };
@@ -1146,7 +1234,13 @@ async function verifyCurrentMaster(masterPassword) {
 async function persistCurrentRecord(nextRecord) {
   const updatedAt = new Date().toISOString();
   const record = { ...nextRecord, updatedAt };
-  const nextIndex = updateVaultMetadata(state.index, state.vaultId, state.vaultName, updatedAt);
+  const nextIndex = updateVaultMetadata(
+    state.index,
+    state.vaultId,
+    state.vaultName,
+    updatedAt,
+    { needsBackup: true },
+  );
   await writeValues([
     [vaultRecordKey(state.vaultId), record],
     [INDEX_KEY, nextIndex],
@@ -1195,7 +1289,7 @@ async function createOrReplaceUsbKey(event) {
       `${safeFileName(state.vaultName)}-llave-usb.json`,
     );
     closeUsbKeyDialog();
-    showNotice('Archivo llave creado. Guardalo en el pendrive y separado de tus copias cifradas.');
+    showNotice('Archivo llave creado. Exportá una nueva copia de la bóveda y guardá ambos archivos separados.');
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude crear el archivo llave.', 'error');
   } finally {
@@ -1210,7 +1304,7 @@ async function disableUsbKey() {
     await verifyCurrentMaster(master);
     await persistCurrentRecord({ ...state.record, usbUnlock: null });
     closeUsbKeyDialog();
-    showNotice('El desbloqueo con archivo llave fue desactivado.');
+    showNotice('Archivo llave desactivado. Exportá una nueva copia para actualizar tu respaldo.');
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude desactivar el archivo llave.', 'error');
   }
@@ -1316,6 +1410,7 @@ async function changeMasterPassword(event) {
       state.vaultId,
       state.vaultName,
       updatedAt,
+      { needsBackup: true },
     );
     await writeValues([
       [vaultRecordKey(state.vaultId), nextRecord],
@@ -1323,8 +1418,9 @@ async function changeMasterPassword(event) {
     ]);
     state.record = nextRecord;
     state.index = nextIndex;
+    updateBackupReminder();
     closeMasterChange();
-    showNotice('Clave maestra actualizada. Las copias anteriores siguen usando la clave anterior.');
+    showNotice('Clave maestra actualizada. Exportá una nueva copia; las anteriores siguen usando la clave anterior.');
   } catch (_) {
     showNotice('La clave maestra actual no es correcta.', 'error');
   }
@@ -1340,12 +1436,24 @@ async function start() {
   $('themeToggle').addEventListener('click', toggleTheme);
 
   $('generateButton').addEventListener('click', () => {
-    const length = Math.max(16, Math.min(64, Number($('passwordLength').value) || 20));
-    $('passwordLength').value = String(length);
-    $('password').value = randomPassword(length);
+    const groups = selectedPasswordGroups();
+    if (!groups.length) return showNotice('Elegí al menos un tipo de carácter.', 'error');
+    $('password').value = randomPassword(groups);
     $('password').type = 'text';
     $('toggleEditorPassword').setAttribute('aria-label', 'Ocultar contraseña');
     resetAutoLock();
+  });
+
+  document.querySelectorAll('.character-toggle').forEach((button) => {
+    button.addEventListener('click', () => {
+      const isActive = button.getAttribute('aria-pressed') === 'true';
+      if (isActive && selectedPasswordGroups().length === 1) {
+        showNotice('La contraseña necesita al menos un tipo de carácter.', 'error');
+        return;
+      }
+      button.setAttribute('aria-pressed', String(!isActive));
+      resetAutoLock();
+    });
   });
 
   $('toggleEditorPassword').addEventListener('click', () => {
@@ -1360,6 +1468,11 @@ async function start() {
   });
 
   $('cancelEditButton').addEventListener('click', clearEditor);
+  $('toggleOptionalFields').addEventListener('click', () => {
+    const expanded = $('toggleOptionalFields').getAttribute('aria-expanded') === 'true';
+    setOptionalFieldsExpanded(!expanded);
+    resetAutoLock();
+  });
   $('search').addEventListener('input', () => {
     renderEntries();
     resetAutoLock();
