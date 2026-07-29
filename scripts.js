@@ -10,9 +10,14 @@ const PBKDF2_ITERATIONS = 600_000;
 const AUTO_LOCK_MS = 5 * 60 * 1000;
 const CLIPBOARD_CLEAR_MS = 20_000;
 const THEME_STORAGE_KEY = 'pwm-theme';
+const USB_KEY_FORMAT = 'pwm-usb-key';
+const USB_KEY_VERSION = 1;
+const USB_KEY_MAX_BYTES = 16 * 1024;
+const DEK_BYTES = 32;
 
 const state = {
   key: null,
+  keyBytes: null,
   entries: [],
   record: null,
   vaultId: null,
@@ -43,6 +48,7 @@ function applyTheme(theme) {
   const isDark = theme === 'dark';
   document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
   $('themeToggle').setAttribute('aria-pressed', String(isDark));
+  $('themeToggle').setAttribute('aria-label', isDark ? 'Activar modo claro' : 'Activar modo oscuro');
   $('themeIcon').textContent = isDark ? '☀' : '☾';
   $('themeToggleLabel').textContent = isDark ? 'Modo claro' : 'Modo oscuro';
 }
@@ -95,8 +101,29 @@ function base64FromBytes(bytes) {
 }
 
 function bytesFromBase64(value) {
+  if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error('Base64 inválido');
+  }
   const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (base64FromBytes(bytes) !== value) throw new Error('Base64 inválido');
+  return bytes;
+}
+
+function hasBase64Length(value, length) {
+  try {
+    return bytesFromBase64(value).byteLength === length;
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasBase64AtLeast(value, minimum) {
+  try {
+    return bytesFromBase64(value).byteLength >= minimum;
+  } catch (_) {
+    return false;
+  }
 }
 
 function newSalt() {
@@ -128,7 +155,24 @@ async function deriveKey(masterPassword, salt, iterations) {
   );
 }
 
-async function encryptPayload(key, payload) {
+function aad(kind, keyId = '') {
+  return encoder.encode(`pwm-local-vault|v2|${kind}${keyId ? `|${keyId}` : ''}`);
+}
+
+async function importAesKey(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== DEK_BYTES) {
+    throw new Error('Clave de cifrado inválida');
+  }
+  return crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+function randomDek() {
+  const bytes = new Uint8Array(DEK_BYTES);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+async function encryptPayloadV1(key, payload) {
   const iv = newIv();
   const cipher = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
@@ -141,7 +185,7 @@ async function encryptPayload(key, payload) {
   };
 }
 
-async function decryptPayload(key, record) {
+async function decryptPayloadV1(key, record) {
   const plaintext = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: bytesFromBase64(record.iv) },
     key,
@@ -150,6 +194,80 @@ async function decryptPayload(key, record) {
   const payload = JSON.parse(decoder.decode(plaintext));
   if (!Array.isArray(payload.entries)) throw new Error('Formato de bóveda inválido');
   return payload;
+}
+
+async function encryptPayloadV2(key, payload) {
+  const iv = newIv();
+  const cipher = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: aad('payload') },
+    key,
+    encoder.encode(JSON.stringify(payload)),
+  );
+  return { iv: base64FromBytes(iv), ciphertext: base64FromBytes(new Uint8Array(cipher)) };
+}
+
+async function decryptPayloadV2(key, record) {
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: bytesFromBase64(record.iv), additionalData: aad('payload') },
+    key,
+    bytesFromBase64(record.ciphertext),
+  );
+  const payload = JSON.parse(decoder.decode(plaintext));
+  if (!Array.isArray(payload.entries)) throw new Error('Formato de bóveda inválido');
+  return payload;
+}
+
+async function wrapDek(kek, dekBytes, context) {
+  const iv = newIv();
+  const cipher = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: context },
+    kek,
+    dekBytes,
+  );
+  return { iv: base64FromBytes(iv), wrappedKey: base64FromBytes(new Uint8Array(cipher)) };
+}
+
+async function unwrapDek(kek, wrap, context) {
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: bytesFromBase64(wrap.iv), additionalData: context },
+    kek,
+    bytesFromBase64(wrap.wrappedKey),
+  );
+  const bytes = new Uint8Array(plain);
+  if (bytes.byteLength !== DEK_BYTES) throw new Error('Clave envuelta inválida');
+  return bytes;
+}
+
+function equalBytes(left, right) {
+  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array) || left.byteLength !== right.byteLength) return false;
+  let result = 0;
+  for (let index = 0; index < left.byteLength; index += 1) result |= left[index] ^ right[index];
+  return result === 0;
+}
+
+async function createV2Record(masterPassword, payload, createdAt = new Date().toISOString()) {
+  const salt = newSalt();
+  const passwordKey = await deriveKey(masterPassword, salt, PBKDF2_ITERATIONS);
+  const keyBytes = randomDek();
+  const key = await importAesKey(keyBytes);
+  const encrypted = await encryptPayloadV2(key, payload);
+  const passwordWrap = await wrapDek(passwordKey, keyBytes, aad('password-wrap'));
+  const updatedAt = new Date().toISOString();
+  return {
+    record: {
+      format: 'pwm-local-vault',
+      version: 2,
+      kdf: 'PBKDF2-SHA-256',
+      iterations: PBKDF2_ITERATIONS,
+      salt: base64FromBytes(salt),
+      passwordWrap,
+      ...encrypted,
+      createdAt,
+      updatedAt,
+    },
+    key,
+    keyBytes,
+  };
 }
 
 function openDatabase() {
@@ -207,14 +325,56 @@ function emptyIndex() {
 }
 
 function validateVaultRecord(record) {
-  const required = ['format', 'version', 'kdf', 'iterations', 'salt', 'iv', 'ciphertext'];
-  if (!record || typeof record !== 'object' || record.format !== 'pwm-local-vault' || record.version !== 1) return false;
-  if (!required.every((field) => Object.hasOwn(record, field))) return false;
-  return record.kdf === 'PBKDF2-SHA-256'
+  if (!record || typeof record !== 'object' || record.format !== 'pwm-local-vault') return false;
+  const common = record.kdf === 'PBKDF2-SHA-256'
     && record.iterations === PBKDF2_ITERATIONS
-    && ['salt', 'iv', 'ciphertext'].every(
-      (field) => typeof record[field] === 'string' && record[field].length > 0,
-    );
+    && hasBase64Length(record.salt, 16)
+    && hasBase64Length(record.iv, 12)
+    && hasBase64AtLeast(record.ciphertext, 16);
+  if (!common) return false;
+  if (record.version === 1) return true;
+  if (record.version !== 2 || !validWrap(record.passwordWrap)) return false;
+  if (!Object.hasOwn(record, 'usbUnlock')) return true;
+  return record.usbUnlock === null || validUsbUnlock(record.usbUnlock);
+}
+
+function validWrap(wrap, exact = true) {
+  return Boolean(
+    wrap
+    && typeof wrap === 'object'
+    && (!exact || Object.keys(wrap).length === 2)
+    && hasBase64Length(wrap.iv, 12)
+    && hasBase64Length(wrap.wrappedKey, DEK_BYTES + 16),
+  );
+}
+
+function validUsbUnlock(value) {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Object.keys(value).length === 3
+    && typeof value.keyId === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.keyId)
+    && validWrap(value, false),
+  );
+}
+
+function validateUsbKeyFile(value) {
+  const required = ['format', 'version', 'keyId', 'secret'];
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== required.length) {
+    throw new Error('Archivo llave inválido');
+  }
+  if (!required.every((field) => Object.hasOwn(value, field))) throw new Error('Archivo llave inválido');
+  if (
+    value.format !== USB_KEY_FORMAT
+    || value.version !== USB_KEY_VERSION
+    || typeof value.keyId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.keyId)
+    || !hasBase64Length(value.secret, DEK_BYTES)
+  ) {
+    throw new Error('Archivo llave inválido');
+  }
+  return { keyId: value.keyId, secret: bytesFromBase64(value.secret) };
 }
 
 function validateVaultIndex(index) {
@@ -298,6 +458,28 @@ function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
     ? preferredVaultId
     : state.index.vaults[0]?.id;
   if (selectedId) select.value = selectedId;
+  refreshUsbUnlockAvailability();
+}
+
+async function refreshUsbUnlockAvailability() {
+  const vaultId = $('vaultSelect').value;
+  const button = $('unlockUsbKeyButton');
+  const helper = $('unlockUsbKeyHelper');
+  button.classList.add('hidden');
+  helper.classList.add('hidden');
+  if (!vaultId) return;
+
+  try {
+    const record = await readValue(vaultRecordKey(vaultId));
+    if ($('vaultSelect').value !== vaultId) return;
+    const available = validateVaultRecord(record)
+      && record.version === 2
+      && validUsbUnlock(record.usbUnlock);
+    button.classList.toggle('hidden', !available);
+    helper.classList.toggle('hidden', !available);
+  } catch (_) {
+    // La clave maestra sigue disponible aunque no se pueda comprobar el archivo llave.
+  }
 }
 
 function updateVaultMetadata(index, vaultId, name, updatedAt) {
@@ -311,8 +493,10 @@ function updateVaultMetadata(index, vaultId, name, updatedAt) {
 }
 
 async function saveVault() {
-  if (!state.key || !state.record || !state.vaultId) throw new Error('Bóveda bloqueada');
-  const encrypted = await encryptPayload(state.key, { entries: state.entries });
+  if (!state.key || !state.keyBytes || !state.record || state.record.version !== 2 || !state.vaultId) {
+    throw new Error('Bóveda bloqueada');
+  }
+  const encrypted = await encryptPayloadV2(state.key, { entries: state.entries });
   const updatedAt = new Date().toISOString();
   const nextRecord = { ...state.record, ...encrypted, updatedAt };
   const nextIndex = updateVaultMetadata(
@@ -376,10 +560,14 @@ function emptyElement(element) {
   while (element.firstChild) element.removeChild(element.firstChild);
 }
 
-function createAction(label, action, id, danger = false) {
+function createAction(label, action, id, danger = false, primary = false) {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = danger ? 'card-button danger' : 'card-button';
+  button.className = [
+    'card-button',
+    danger ? 'danger' : '',
+    primary ? 'copy-button' : '',
+  ].filter(Boolean).join(' ');
   button.textContent = label;
   button.dataset.action = action;
   button.dataset.id = id;
@@ -410,7 +598,7 @@ function entryCard(entry) {
   const actions = document.createElement('div');
   actions.className = 'entry-actions';
   actions.append(
-    createAction('Copiar', 'copy', entry.id),
+    createAction('Copiar contraseña', 'copy', entry.id, false, true),
     createAction('Ver', 'reveal', entry.id),
     createAction('Editar', 'edit', entry.id),
     createAction('Eliminar', 'delete', entry.id, true),
@@ -466,11 +654,21 @@ function editEntry(id) {
   resetAutoLock();
 }
 
-async function copyPassword(id) {
+async function copyPassword(id, button) {
   const entry = state.entries.find((item) => item.id === id);
   if (!entry) return;
   try {
     await navigator.clipboard.writeText(entry.password);
+    if (button) {
+      const originalLabel = button.dataset.defaultLabel || button.textContent;
+      button.dataset.defaultLabel = originalLabel;
+      button.textContent = '✓ Copiada';
+      button.classList.add('copied');
+      window.setTimeout(() => {
+        button.textContent = originalLabel;
+        button.classList.remove('copied');
+      }, 2000);
+    }
     showNotice('Contraseña copiada. Intentaré limpiar el portapapeles en 20 segundos.');
     window.setTimeout(async () => {
       try {
@@ -509,21 +707,13 @@ async function createVault(event) {
   if (master.length < 12) return showNotice('Usá una clave maestra de al menos 12 caracteres.', 'error');
   if (master !== confirmMaster) return showNotice('Las dos claves maestras no coinciden.', 'error');
 
+  let pendingKeyBytes;
   try {
     const vaultId = crypto.randomUUID();
-    const salt = newSalt();
-    const key = await deriveKey(master, salt, PBKDF2_ITERATIONS);
     const createdAt = new Date().toISOString();
-    const recordBase = {
-      format: 'pwm-local-vault',
-      version: 1,
-      kdf: 'PBKDF2-SHA-256',
-      iterations: PBKDF2_ITERATIONS,
-      salt: base64FromBytes(salt),
-      createdAt,
-    };
-    const encrypted = await encryptPayload(key, { entries: [] });
-    const record = { ...recordBase, ...encrypted, updatedAt: createdAt };
+    const created = await createV2Record(master, { entries: [] }, createdAt);
+    const { record, key, keyBytes } = created;
+    pendingKeyBytes = keyBytes;
     const nextIndex = {
       ...state.index,
       activeVaultId: vaultId,
@@ -538,6 +728,8 @@ async function createVault(event) {
     ]);
 
     state.key = key;
+    state.keyBytes = keyBytes;
+    pendingKeyBytes = null;
     state.entries = [];
     state.record = record;
     state.vaultId = vaultId;
@@ -552,6 +744,7 @@ async function createVault(event) {
     showNotice(`Bóveda “${vaultName}” creada.`);
   } catch (_) {
     state.key = null;
+    pendingKeyBytes?.fill(0);
     showNotice('No pude crear la bóveda en este navegador.', 'error');
   }
 }
@@ -563,28 +756,99 @@ async function unlockVault(event) {
   const metadata = state.index.vaults.find((vault) => vault.id === vaultId);
   if (!vaultId || !metadata || !master) return;
 
+  let pendingKeyBytes;
   try {
-    const record = await readValue(vaultRecordKey(vaultId));
+    let record = await readValue(vaultRecordKey(vaultId));
     if (!validateVaultRecord(record)) throw new Error('No existe una bóveda válida');
-    const key = await deriveKey(master, bytesFromBase64(record.salt), record.iterations);
-    const payload = await decryptPayload(key, record);
-    const nextIndex = { ...state.index, activeVaultId: vaultId };
-    await writeValues([[INDEX_KEY, nextIndex]]);
-
-    state.key = key;
-    state.entries = payload.entries.map(normalizeEntry);
-    state.record = record;
-    state.vaultId = vaultId;
-    state.vaultName = metadata.name;
-    state.index = nextIndex;
-    $('unlockForm').reset();
-    clearEditor();
-    setScreen('vault');
-    renderEntries();
-    resetAutoLock();
+    let key;
+    let keyBytes;
+    let payload;
+    let migrated = false;
+    if (record.version === 1) {
+      const legacyKey = await deriveKey(master, bytesFromBase64(record.salt), record.iterations);
+      payload = await decryptPayloadV1(legacyKey, record);
+      const next = await createV2Record(master, payload, record.createdAt || new Date().toISOString());
+      record = next.record;
+      key = next.key;
+      keyBytes = next.keyBytes;
+      pendingKeyBytes = keyBytes;
+      migrated = true;
+    } else {
+      const passwordKey = await deriveKey(master, bytesFromBase64(record.salt), record.iterations);
+      keyBytes = await unwrapDek(passwordKey, record.passwordWrap, aad('password-wrap'));
+      pendingKeyBytes = keyBytes;
+      key = await importAesKey(keyBytes);
+      payload = await decryptPayloadV2(key, record);
+    }
+    const nextIndex = updateVaultMetadata(state.index, vaultId, metadata.name, record.updatedAt);
+    const writes = [[INDEX_KEY, nextIndex]];
+    if (migrated) writes.unshift([vaultRecordKey(vaultId), record]);
+    await writeValues(writes);
+    activateUnlockedVault(vaultId, metadata.name, record, key, keyBytes, payload, nextIndex);
+    pendingKeyBytes = null;
     showNotice(`Bóveda “${metadata.name}” desbloqueada.`);
   } catch (_) {
+    pendingKeyBytes?.fill(0);
     showNotice('La clave maestra no es correcta o la bóveda está dañada.', 'error');
+  }
+}
+
+function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payload, index) {
+  state.key = key;
+  state.keyBytes = keyBytes;
+  state.entries = payload.entries.map(normalizeEntry);
+  state.record = record;
+  state.vaultId = vaultId;
+  state.vaultName = vaultName;
+  state.index = index;
+  $('unlockForm').reset();
+  clearEditor();
+  setScreen('vault');
+  renderEntries();
+  resetAutoLock();
+}
+
+async function readUsbKeyFile(file) {
+  if (!file || file.size <= 0 || file.size > USB_KEY_MAX_BYTES) throw new Error('Archivo llave inválido');
+  const text = await file.text();
+  if (encoder.encode(text).byteLength > USB_KEY_MAX_BYTES) throw new Error('Archivo llave inválido');
+  return validateUsbKeyFile(JSON.parse(text));
+}
+
+async function unlockWithUsbKey(event) {
+  const [file] = event.target.files;
+  event.target.value = '';
+  if (!file) return;
+  const vaultId = $('vaultSelect').value;
+  const metadata = state.index.vaults.find((vault) => vault.id === vaultId);
+  if (!vaultId || !metadata) return;
+
+  let usbKey;
+  let pendingKeyBytes;
+  try {
+    const record = await readValue(vaultRecordKey(vaultId));
+    if (!validateVaultRecord(record) || record.version !== 2 || !validUsbUnlock(record.usbUnlock)) {
+      throw new Error('Esta bóveda no tiene archivo llave configurado');
+    }
+    usbKey = await readUsbKeyFile(file);
+    if (usbKey.keyId !== record.usbUnlock.keyId) throw new Error('Archivo llave incorrecto');
+    const key = await importAesKey(usbKey.secret);
+    const keyBytes = await unwrapDek(key, record.usbUnlock, aad('usb-wrap', usbKey.keyId));
+    pendingKeyBytes = keyBytes;
+    const payloadKey = await importAesKey(keyBytes);
+    const payload = await decryptPayloadV2(payloadKey, record);
+    const nextIndex = { ...state.index, activeVaultId: vaultId };
+    await writeValues([[INDEX_KEY, nextIndex]]);
+    activateUnlockedVault(vaultId, metadata.name, record, payloadKey, keyBytes, payload, nextIndex);
+    pendingKeyBytes = null;
+    showNotice(`Bóveda “${metadata.name}” desbloqueada con el archivo llave.`);
+  } catch (error) {
+    pendingKeyBytes?.fill(0);
+    showNotice(error.message === 'Esta bóveda no tiene archivo llave configurado'
+      ? error.message
+      : 'El archivo llave no corresponde o la bóveda está dañada.', 'error');
+  } finally {
+    usbKey?.secret.fill(0);
   }
 }
 
@@ -594,7 +858,13 @@ function lockVault(expired = false) {
     $('changeMasterForm').reset();
     $('changeMasterDialog').close();
   }
+  if ($('usbKeyDialog').open) {
+    $('usbKeyForm').reset();
+    $('usbKeyDialog').close();
+  }
   state.key = null;
+  if (state.keyBytes) state.keyBytes.fill(0);
+  state.keyBytes = null;
   state.entries = [];
   state.record = null;
   state.vaultId = null;
@@ -749,6 +1019,98 @@ async function importBackup(event) {
   }
 }
 
+function downloadJson(value, fileName) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function verifyCurrentMaster(masterPassword) {
+  if (!state.record || state.record.version !== 2 || !state.keyBytes) throw new Error('Bóveda bloqueada');
+  const passwordKey = await deriveKey(masterPassword, bytesFromBase64(state.record.salt), state.record.iterations);
+  const verifiedBytes = await unwrapDek(passwordKey, state.record.passwordWrap, aad('password-wrap'));
+  const matches = equalBytes(verifiedBytes, state.keyBytes);
+  verifiedBytes.fill(0);
+  if (!matches) throw new Error('Clave maestra incorrecta');
+}
+
+async function persistCurrentRecord(nextRecord) {
+  const updatedAt = new Date().toISOString();
+  const record = { ...nextRecord, updatedAt };
+  const nextIndex = updateVaultMetadata(state.index, state.vaultId, state.vaultName, updatedAt);
+  await writeValues([
+    [vaultRecordKey(state.vaultId), record],
+    [INDEX_KEY, nextIndex],
+  ]);
+  state.record = record;
+  state.index = nextIndex;
+  renderVaultSelect(state.vaultId);
+}
+
+function openUsbKeyDialog() {
+  if (!state.record || state.record.version !== 2) return;
+  $('usbKeyForm').reset();
+  const configured = validUsbUnlock(state.record.usbUnlock);
+  $('usbKeyStatus').textContent = configured
+    ? 'Hay un archivo llave activo. Crear otro dejará de aceptar el anterior.'
+    : 'No hay ningún archivo llave activo para esta bóveda.';
+  $('disableUsbKeyButton').classList.toggle('hidden', !configured);
+  $('usbKeyDialog').showModal();
+  $('usbMaster').focus();
+  resetAutoLock();
+}
+
+function closeUsbKeyDialog() {
+  $('usbKeyForm').reset();
+  if ($('usbKeyDialog').open) $('usbKeyDialog').close();
+  resetAutoLock();
+}
+
+async function createOrReplaceUsbKey(event) {
+  event.preventDefault();
+  const master = $('usbMaster').value;
+  if (!master) return showNotice('Ingresá tu clave maestra para crear el archivo llave.', 'error');
+  let secret;
+  try {
+    await verifyCurrentMaster(master);
+    const keyId = crypto.randomUUID();
+    secret = randomDek();
+    const secretKey = await importAesKey(secret);
+    const usbUnlock = {
+      keyId,
+      ...(await wrapDek(secretKey, state.keyBytes, aad('usb-wrap', keyId))),
+    };
+    await persistCurrentRecord({ ...state.record, usbUnlock });
+    downloadJson(
+      { format: USB_KEY_FORMAT, version: USB_KEY_VERSION, keyId, secret: base64FromBytes(secret) },
+      `${safeFileName(state.vaultName)}-llave-usb.json`,
+    );
+    closeUsbKeyDialog();
+    showNotice('Archivo llave creado. Guardalo en el pendrive y separado de tus copias cifradas.');
+  } catch (_) {
+    showNotice('La clave maestra no es correcta o no pude crear el archivo llave.', 'error');
+  } finally {
+    secret?.fill(0);
+  }
+}
+
+async function disableUsbKey() {
+  const master = $('usbMaster').value;
+  if (!master) return showNotice('Ingresá tu clave maestra para desactivar el archivo llave.', 'error');
+  try {
+    await verifyCurrentMaster(master);
+    await persistCurrentRecord({ ...state.record, usbUnlock: null });
+    closeUsbKeyDialog();
+    showNotice('El desbloqueo con archivo llave fue desactivado.');
+  } catch (_) {
+    showNotice('La clave maestra no es correcta o no pude desactivar el archivo llave.', 'error');
+  }
+}
+
 function openMasterChange() {
   $('changeMasterForm').reset();
   $('changeMasterDialog').showModal();
@@ -780,22 +1142,16 @@ async function changeMasterPassword(event) {
   }
 
   try {
-    const verificationKey = await deriveKey(
-      currentMaster,
-      bytesFromBase64(state.record.salt),
-      state.record.iterations,
-    );
-    await decryptPayload(verificationKey, state.record);
-
+    await verifyCurrentMaster(currentMaster);
     const salt = newSalt();
-    const nextKey = await deriveKey(newMaster, salt, PBKDF2_ITERATIONS);
-    const encrypted = await encryptPayload(nextKey, { entries: state.entries });
+    const newPasswordKey = await deriveKey(newMaster, salt, PBKDF2_ITERATIONS);
+    const passwordWrap = await wrapDek(newPasswordKey, state.keyBytes, aad('password-wrap'));
     const updatedAt = new Date().toISOString();
     const nextRecord = {
       ...state.record,
-      ...encrypted,
       salt: base64FromBytes(salt),
       iterations: PBKDF2_ITERATIONS,
+      passwordWrap,
       updatedAt,
     };
     const nextIndex = updateVaultMetadata(
@@ -808,7 +1164,6 @@ async function changeMasterPassword(event) {
       [vaultRecordKey(state.vaultId), nextRecord],
       [INDEX_KEY, nextIndex],
     ]);
-    state.key = nextKey;
     state.record = nextRecord;
     state.index = nextIndex;
     closeMasterChange();
@@ -824,6 +1179,7 @@ async function start() {
   $('unlockForm').addEventListener('submit', unlockVault);
   $('entryForm').addEventListener('submit', saveEntry);
   $('changeMasterForm').addEventListener('submit', changeMasterPassword);
+  $('usbKeyForm').addEventListener('submit', createOrReplaceUsbKey);
   $('themeToggle').addEventListener('click', toggleTheme);
 
   $('generateButton').addEventListener('click', () => {
@@ -855,7 +1211,7 @@ async function start() {
     const button = event.target.closest('button[data-action]');
     if (!button) return;
     const { action, id } = button.dataset;
-    if (action === 'copy') copyPassword(id);
+    if (action === 'copy') copyPassword(id, button);
     if (action === 'reveal') toggleEntryPassword(id, button);
     if (action === 'edit') editEntry(id);
     if (action === 'delete') deleteEntry(id);
@@ -871,13 +1227,25 @@ async function start() {
   $('vaultSelect').addEventListener('change', () => {
     state.index.activeVaultId = $('vaultSelect').value;
     $('unlockMaster').value = '';
+    refreshUsbUnlockAvailability();
   });
+
+  $('unlockUsbKeyButton').addEventListener('click', () => $('usbKeyInput').click());
+  $('usbKeyInput').addEventListener('change', unlockWithUsbKey);
 
   $('changeMasterButton').addEventListener('click', openMasterChange);
   $('cancelMasterChange').addEventListener('click', closeMasterChange);
   $('changeMasterDialog').addEventListener('cancel', (event) => {
     event.preventDefault();
     closeMasterChange();
+  });
+
+  $('usbKeyButton').addEventListener('click', openUsbKeyDialog);
+  $('cancelUsbKey').addEventListener('click', closeUsbKeyDialog);
+  $('disableUsbKeyButton').addEventListener('click', disableUsbKey);
+  $('usbKeyDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeUsbKeyDialog();
   });
 
   $('exportButton').addEventListener('click', downloadBackup);

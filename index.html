@@ -76,6 +76,8 @@
             <input id="unlockMaster" type="password" autocomplete="current-password" required autofocus placeholder="Tu clave maestra">
           </label>
           <button class="button primary" type="submit">Desbloquear</button>
+          <button id="unlockUsbKeyButton" class="button secondary hidden" type="button">Desbloquear con archivo llave</button>
+          <p id="unlockUsbKeyHelper" class="helper hidden">Elegí el archivo llave desde tu pendrive. La clave maestra sigue funcionando como respaldo.</p>
         </form>
         <div class="lock-secondary-actions">
           <button id="newVaultButton" class="text-button" type="button">Crear otra bóveda</button>
@@ -92,6 +94,7 @@
         </div>
         <div class="toolbar-actions">
           <button id="changeMasterButton" class="button secondary" type="button">Cambiar clave maestra</button>
+          <button id="usbKeyButton" class="button secondary" type="button">Archivo llave USB</button>
           <button id="exportButton" class="button secondary" type="button">Exportar</button>
           <button id="importButton" class="button secondary" type="button">Importar</button>
           <button id="switchVaultButton" class="button secondary" type="button">Cambiar bóveda</button>
@@ -100,6 +103,20 @@
       </div>
 
       <div class="vault-grid">
+        <section class="panel entries-panel" aria-labelledby="entriesTitle">
+          <div class="panel-heading entries-heading">
+            <div>
+              <p class="eyebrow">Guardadas</p>
+              <h2 id="entriesTitle">Contraseñas</h2>
+            </div>
+            <label class="search-field">
+              <span class="sr-only">Buscar</span>
+              <input id="search" type="search" autocomplete="off" placeholder="Buscar">
+            </label>
+          </div>
+          <div id="entries" class="entries" aria-live="polite"></div>
+        </section>
+
         <section class="panel entry-editor" aria-labelledby="editorTitle">
           <div class="panel-heading">
             <div>
@@ -145,24 +162,11 @@
             <button class="button primary" type="submit"><span id="saveButtonText">Guardar en la bóveda</span></button>
           </form>
         </section>
-
-        <section class="panel entries-panel" aria-labelledby="entriesTitle">
-          <div class="panel-heading entries-heading">
-            <div>
-              <p class="eyebrow">Guardadas</p>
-              <h2 id="entriesTitle">Contraseñas</h2>
-            </div>
-            <label class="search-field">
-              <span class="sr-only">Buscar</span>
-              <input id="search" type="search" autocomplete="off" placeholder="Buscar">
-            </label>
-          </div>
-          <div id="entries" class="entries" aria-live="polite"></div>
-        </section>
       </div>
     </section>
 
     <input id="importInput" class="hidden" type="file" accept="application/json,.json">
+    <input id="usbKeyInput" class="hidden" type="file" accept="application/json,.json">
 
     <dialog id="changeMasterDialog" class="modal">
       <form id="changeMasterForm" class="stack" novalidate>
@@ -186,6 +190,26 @@
         <div class="modal-actions">
           <button id="cancelMasterChange" class="button secondary" type="button">Cancelar</button>
           <button class="button primary" type="submit">Guardar nueva clave</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="usbKeyDialog" class="modal">
+      <form id="usbKeyForm" class="stack" novalidate>
+        <div>
+          <p class="eyebrow">Acceso alternativo</p>
+          <h2>Archivo llave USB</h2>
+          <p id="usbKeyStatus" class="helper"></p>
+        </div>
+        <p class="helper">El archivo no contiene tu clave maestra. Pero quien tenga este archivo y una copia cifrada de la bóveda podrá abrirla. No los guardes juntos.</p>
+        <label>
+          <span>Clave maestra actual</span>
+          <input id="usbMaster" type="password" autocomplete="current-password" required>
+        </label>
+        <div class="modal-actions">
+          <button id="cancelUsbKey" class="button secondary" type="button">Cancelar</button>
+          <button id="disableUsbKeyButton" class="button secondary hidden" type="button">Desactivar</button>
+          <button class="button primary" type="submit">Crear o reemplazar archivo</button>
         </div>
       </form>
     </dialog>
