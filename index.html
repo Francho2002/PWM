@@ -98,10 +98,17 @@
         <p class="eyebrow">Bóveda bloqueada</p>
         <h1>Elegí una bóveda.</h1>
         <form id="unlockForm" class="stack" novalidate>
-          <label>
-            <span>Bóveda</span>
-            <select id="vaultSelect" required></select>
-          </label>
+          <div class="field-label">
+            <span id="vaultSelectLabel">Bóveda</span>
+            <div class="vault-picker">
+              <button id="vaultSelectButton" class="vault-select-button" type="button" aria-labelledby="vaultSelectLabel vaultSelectButtonText" aria-haspopup="listbox" aria-expanded="false" aria-controls="vaultSelectList">
+                <span id="vaultSelectButtonText">Elegí una bóveda</span>
+                <svg class="vault-select-chevron" aria-hidden="true"><use href="#icon-more"></use></svg>
+              </button>
+              <div id="vaultSelectList" class="vault-select-list hidden" role="listbox" aria-labelledby="vaultSelectLabel"></div>
+            </div>
+            <input id="vaultSelect" type="hidden">
+          </div>
           <label>
             <span>Clave maestra</span>
             <input id="unlockMaster" type="password" autocomplete="current-password" required autofocus placeholder="Tu clave maestra">

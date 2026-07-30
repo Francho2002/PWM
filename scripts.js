@@ -553,22 +553,86 @@ function cleanImportedVaultName(preferredName) {
   return String(preferredName || 'Bóveda importada').trim().slice(0, 60) || 'Bóveda importada';
 }
 
+function sortedVaults() {
+  return state.index.vaults
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+function closeVaultPicker() {
+  $('vaultSelectList').classList.add('hidden');
+  $('vaultSelectButton').setAttribute('aria-expanded', 'false');
+}
+
+function renderVaultPicker(selectedId) {
+  const button = $('vaultSelectButton');
+  const buttonText = $('vaultSelectButtonText');
+  const list = $('vaultSelectList');
+  const vaults = sortedVaults();
+  const selectedVault = vaults.find((vault) => vault.id === selectedId);
+  list.replaceChildren();
+  button.disabled = !selectedVault;
+  buttonText.textContent = selectedVault?.name || 'Elegí una bóveda';
+  closeVaultPicker();
+
+  vaults.forEach((vault) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'vault-select-option';
+    option.dataset.vaultId = vault.id;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(vault.id === selectedId));
+    option.textContent = vault.name;
+    list.append(option);
+  });
+}
+
+function openVaultPicker(focus = 'selected') {
+  const list = $('vaultSelectList');
+  if (!$('vaultSelect').value) return;
+  list.classList.remove('hidden');
+  $('vaultSelectButton').setAttribute('aria-expanded', 'true');
+  const options = [...list.querySelectorAll('.vault-select-option')];
+  const target = focus === 'first'
+    ? options[0]
+    : focus === 'last'
+      ? options[options.length - 1]
+      : list.querySelector('[aria-selected="true"]');
+  target?.focus();
+}
+
+function selectVault(vaultId) {
+  const vault = state.index.vaults.find((item) => item.id === vaultId);
+  if (!vault) return;
+  $('vaultSelect').value = vaultId;
+  state.index.activeVaultId = vaultId;
+  $('unlockMaster').value = '';
+  renderVaultPicker(vaultId);
+  refreshUsbUnlockAvailability();
+  resetAutoLock();
+}
+
+function moveVaultPickerFocus(event) {
+  const options = [...$('vaultSelectList').querySelectorAll('.vault-select-option')];
+  const currentIndex = options.indexOf(document.activeElement);
+  let nextIndex = currentIndex;
+  if (event.key === 'ArrowDown') nextIndex = Math.min(currentIndex + 1, options.length - 1);
+  if (event.key === 'ArrowUp') nextIndex = Math.max(currentIndex - 1, 0);
+  if (event.key === 'Home') nextIndex = 0;
+  if (event.key === 'End') nextIndex = options.length - 1;
+  if (nextIndex !== currentIndex) {
+    event.preventDefault();
+    options[nextIndex]?.focus();
+  }
+}
+
 function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
   const select = $('vaultSelect');
-  while (select.firstChild) select.removeChild(select.firstChild);
-  state.index.vaults
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name, 'es'))
-    .forEach((vault) => {
-      const option = document.createElement('option');
-      option.value = vault.id;
-      option.textContent = vault.name;
-      select.append(option);
-    });
   const selectedId = state.index.vaults.some((vault) => vault.id === preferredVaultId)
     ? preferredVaultId
     : state.index.vaults[0]?.id;
-  if (selectedId) select.value = selectedId;
+  select.value = selectedId || '';
+  renderVaultPicker(selectedId);
   refreshUsbUnlockAvailability();
   updateBackupReminder();
 }
@@ -1757,9 +1821,47 @@ async function start() {
     setScreen('unlock');
   });
   $('vaultSelect').addEventListener('change', () => {
-    state.index.activeVaultId = $('vaultSelect').value;
-    $('unlockMaster').value = '';
-    refreshUsbUnlockAvailability();
+    selectVault($('vaultSelect').value);
+  });
+  $('vaultSelectButton').addEventListener('click', () => {
+    const expanded = $('vaultSelectButton').getAttribute('aria-expanded') === 'true';
+    if (expanded) {
+      closeVaultPicker();
+      $('vaultSelectButton').focus();
+    } else {
+      openVaultPicker();
+    }
+    resetAutoLock();
+  });
+  $('vaultSelectButton').addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      openVaultPicker('first');
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openVaultPicker('last');
+    }
+  });
+  $('vaultSelectList').addEventListener('click', (event) => {
+    const option = event.target.closest('.vault-select-option');
+    if (option) selectVault(option.dataset.vaultId);
+  });
+  $('vaultSelectList').addEventListener('keydown', (event) => {
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) moveVaultPickerFocus(event);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeVaultPicker();
+      $('vaultSelectButton').focus();
+    }
+  });
+  $('vaultSelectList').addEventListener('focusout', (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== $('vaultSelectButton')) {
+      closeVaultPicker();
+    }
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.vault-picker')) closeVaultPicker();
   });
 
   $('unlockUsbKeyButton').addEventListener('click', () => $('usbKeyInput').click());
