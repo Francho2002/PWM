@@ -47,7 +47,7 @@
   </svg>
   <main class="app-shell">
     <header class="app-header">
-      <a class="brand" href="./" aria-label="Bóveda local, inicio">
+      <a id="homeLink" class="brand" href="./" aria-label="Bóveda local, inicio">
         <span class="brand-mark" aria-hidden="true">⌘</span>
         <span>
           <strong>Bóveda local</strong>
@@ -291,6 +291,20 @@
           <button id="confirmDeleteVaultButton" class="button danger" type="submit" disabled>Borrar definitivamente</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="pendingBackupDialog" class="modal" aria-labelledby="pendingBackupTitle">
+      <div class="stack">
+        <div>
+          <p class="eyebrow">Respaldo pendiente</p>
+          <h2 id="pendingBackupTitle">Exportá antes de continuar</h2>
+          <p class="helper">Hay cambios recientes sin una copia cifrada. Exportarla ahora reduce el riesgo de perder acceso o credenciales por accidente.</p>
+        </div>
+        <div class="modal-actions">
+          <button id="continueWithoutBackupButton" class="button secondary" type="button">Continuar sin copia</button>
+          <button id="exportThenContinueButton" class="button primary" type="button">Exportar ahora</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog id="historyDialog" class="modal history-modal" aria-labelledby="historyTitle">

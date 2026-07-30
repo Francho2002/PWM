@@ -7,7 +7,7 @@ const INDEX_KEY = 'vault-index';
 const LEGACY_RECORD_KEY = 'current';
 const VAULT_RECORD_PREFIX = 'vault:';
 const PBKDF2_ITERATIONS = 600_000;
-const AUTO_LOCK_MS = 5 * 60 * 1000;
+const AUTO_LOCK_MS = 15 * 60 * 1000;
 const CLIPBOARD_CLEAR_MS = 20_000;
 const THEME_STORAGE_KEY = 'pwm-theme';
 const USB_KEY_FORMAT = 'pwm-usb-key';
@@ -71,6 +71,9 @@ const state = {
   },
   autoLockTimer: null,
   noticeTimer: null,
+  pendingBackupAction: null,
+  leaveBackupReminderTimer: null,
+  beforeUnloadWarningActive: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -687,6 +690,80 @@ function updateBackupReminder() {
   } else {
     $('exportButton').removeAttribute('aria-describedby');
   }
+  syncBeforeUnloadWarning();
+}
+
+function hasPendingBackups() {
+  return state.index.vaults.some((vault) => vault.needsBackup);
+}
+
+function activeVaultNeedsBackup() {
+  const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+  return Boolean(state.vaultId && metadata?.needsBackup);
+}
+
+function clearLeaveBackupReminder() {
+  window.clearTimeout(state.leaveBackupReminderTimer);
+  state.leaveBackupReminderTimer = null;
+}
+
+function warnBeforeLeavingWithPendingBackup(event) {
+  if (!hasPendingBackups()) return;
+  clearLeaveBackupReminder();
+  state.leaveBackupReminderTimer = window.setTimeout(() => {
+    state.leaveBackupReminderTimer = null;
+    if (!document.hidden && hasPendingBackups()) {
+      window.alert('Por favor, respaldá tu bóveda en el USB antes de irte. Esto evita que puedas perder el acceso por accidente.');
+    }
+  }, 0);
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+function syncBeforeUnloadWarning() {
+  const shouldWarn = hasPendingBackups();
+  if (shouldWarn && !state.beforeUnloadWarningActive) {
+    window.addEventListener('beforeunload', warnBeforeLeavingWithPendingBackup);
+    state.beforeUnloadWarningActive = true;
+  }
+  if (!shouldWarn && state.beforeUnloadWarningActive) {
+    window.removeEventListener('beforeunload', warnBeforeLeavingWithPendingBackup);
+    state.beforeUnloadWarningActive = false;
+    clearLeaveBackupReminder();
+  }
+}
+
+function closePendingBackupDialog() {
+  state.pendingBackupAction = null;
+  if ($('pendingBackupDialog').open) $('pendingBackupDialog').close();
+}
+
+function requestBackupBefore(action) {
+  if (!activeVaultNeedsBackup()) return action();
+  state.pendingBackupAction = action;
+  $('pendingBackupDialog').showModal();
+  $('exportThenContinueButton').focus();
+}
+
+function continueWithoutBackup() {
+  const action = state.pendingBackupAction;
+  closePendingBackupDialog();
+  action?.();
+}
+
+async function exportThenContinue() {
+  const button = $('exportThenContinueButton');
+  button.disabled = true;
+  try {
+    await downloadBackup();
+    if (!activeVaultNeedsBackup()) {
+      const action = state.pendingBackupAction;
+      closePendingBackupDialog();
+      action?.();
+    }
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function saveVault(backupReason = 'credentials', historyEvent = null) {
@@ -1236,6 +1313,7 @@ function lockVault(expired = false) {
     $('deleteVaultForm').reset();
     $('deleteVaultDialog').close();
   }
+  if ($('pendingBackupDialog').open) closePendingBackupDialog();
   if ($('historyDialog').open) $('historyDialog').close();
   state.key = null;
   if (state.keyBytes) state.keyBytes.fill(0);
@@ -1814,7 +1892,12 @@ async function start() {
     if (action === 'delete') deleteEntry(id);
   });
 
-  $('lockButton').addEventListener('click', () => lockVault());
+  $('lockButton').addEventListener('click', () => requestBackupBefore(() => lockVault()));
+  $('homeLink').addEventListener('click', (event) => {
+    if (!activeVaultNeedsBackup()) return;
+    event.preventDefault();
+    requestBackupBefore(() => window.location.assign($('homeLink').href));
+  });
   $('historyButton').addEventListener('click', openHistoryDialog);
   $('closeHistoryButton').addEventListener('click', closeHistoryDialog);
   $('historyDialog').addEventListener('cancel', (event) => {
@@ -1893,7 +1976,7 @@ async function start() {
     closeUsbKeyDialog();
   });
 
-  $('deleteVaultButton').addEventListener('click', openDeleteVaultDialog);
+  $('deleteVaultButton').addEventListener('click', () => requestBackupBefore(openDeleteVaultDialog));
   $('deleteVaultForm').addEventListener('submit', deleteCurrentVault);
   $('deleteVaultConfirmation').addEventListener('input', syncDeleteVaultConfirmation);
   $('cancelDeleteVault').addEventListener('click', closeDeleteVaultDialog);
@@ -1902,11 +1985,19 @@ async function start() {
     closeDeleteVaultDialog();
   });
 
+  $('continueWithoutBackupButton').addEventListener('click', continueWithoutBackup);
+  $('exportThenContinueButton').addEventListener('click', exportThenContinue);
+  $('pendingBackupDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closePendingBackupDialog();
+  });
+
   $('exportButton').addEventListener('click', downloadBackup);
   $('importButton').addEventListener('click', () => $('importInput').click());
   $('showImportFromLock').addEventListener('click', () => $('importInput').click());
   $('showImportFromSetup').addEventListener('click', () => $('importInput').click());
   $('importInput').addEventListener('change', importBackup);
+  window.addEventListener('pagehide', clearLeaveBackupReminder);
   ['click', 'keydown', 'touchstart'].forEach(
     (eventName) => document.addEventListener(eventName, resetAutoLock),
   );

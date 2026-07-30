@@ -11,6 +11,8 @@ Una bóveda de contraseñas que funciona sin cuenta ni servidor. Los datos queda
 
 Cuando agregás, modificás o eliminás una contraseña, PWM muestra un aviso urgente y resalta **Exportar** hasta que descargues una nueva versión para tu USB. Es necesario hacerlo: si perdés el navegador o el dispositivo antes, las copias anteriores no tendrán las credenciales recientes. Al cambiar la clave maestra, las copias previas sólo abrirán con la clave anterior; exportá una nueva inmediatamente.
 
+Si intentás cerrar, recargar o salir del sitio con una copia pendiente, el navegador mostrará su confirmación nativa de cambios sin guardar. Dentro de PWM, bloquear, volver al inicio o borrar una bóveda también ofrecen exportar antes de continuar. Estos avisos son una última barrera: el navegador puede permitir que sigas sin copia y no reemplazan el respaldo.
+
 ### Archivo llave en pendrive (opcional)
 
 Desde una bóveda abierta, elegí **Archivo llave USB** e ingresá la clave maestra actual. Se descargará un pequeño archivo JSON numerado, por ejemplo `personal-llave-v1.json`, `personal-llave-v2.json`, etc., para guardar en tu pendrive. Luego, en la pantalla bloqueada, elegí **Importar llave**: PWM encontrará y abrirá automáticamente la bóveda vinculada con ese archivo.
@@ -36,7 +38,7 @@ PWM no guarda en el historial las contraseñas, los nombres de usuario ni accion
 - Cada bóveda nueva usa una clave aleatoria de datos (DEK) de 256 bits para cifrar el contenido con AES-256-GCM y un IV nuevo cada vez que se guarda.
 - La DEK se envuelve con una clave derivada de la clave maestra mediante PBKDF2-HMAC-SHA-256 y 600.000 iteraciones. La clave maestra no se guarda.
 - Opcionalmente, la misma DEK puede envolverse con el secreto aleatorio de un archivo llave. Los contextos de cifrado separan contenido, clave maestra y archivo llave.
-- La bóveda se bloquea tras cinco minutos sin actividad y al pulsar **Bloquear**.
+- La bóveda se bloquea tras quince minutos sin actividad y al pulsar **Bloquear**.
 - Las contraseñas generadas usan `crypto.getRandomValues`.
 - La clave maestra puede cambiarse desde una bóveda desbloqueada.
 - Las copias exportadas permanecen cifradas y conservan el nombre de la bóveda.
