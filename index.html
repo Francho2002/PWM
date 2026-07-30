@@ -44,6 +44,9 @@
       <path d="M12 3 21 20H3L12 3Z"></path>
       <path d="M12 9v5m0 3h.01"></path>
     </symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24">
+      <path d="m7 7 10 10M17 7 7 17"></path>
+    </symbol>
     <symbol id="icon-palette" viewBox="0 0 24 24">
       <path d="M12 3a9 9 0 1 0 0 18h1.2a1.8 1.8 0 0 0 0-3.6h-.7a1.5 1.5 0 0 1 0-3h1.8A4.7 4.7 0 0 0 19 9.7 6.7 6.7 0 0 0 12 3Z"></path>
       <path d="M7.5 10.5h.01M10 7.5h.01M14 7.5h.01M16.5 10.5h.01"></path>
@@ -155,13 +158,14 @@
         </div>
       </div>
 
-      <div id="backupReminder" class="backup-reminder hidden" role="status">
+      <section id="backupReminder" class="backup-reminder hidden" aria-label="Recordatorio de respaldo" aria-live="polite">
         <span class="backup-reminder-icon" aria-hidden="true"><svg><use href="#icon-alert"></use></svg></span>
         <div class="backup-reminder-copy">
           <strong id="backupReminderTitle">Copia urgente requerida</strong>
           <div id="backupReminderText" class="backup-reminder-text">Exportá la bóveda y guardá una copia nueva en tu USB antes de perder este navegador.</div>
         </div>
-      </div>
+        <button id="dismissBackupReminder" class="backup-reminder-close" type="button" aria-label="Ocultar recordatorio de respaldo"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button>
+      </section>
 
       <div class="vault-grid">
         <section class="panel entries-panel" aria-labelledby="entriesTitle">
@@ -236,6 +240,8 @@
 
     <input id="importInput" class="hidden" type="file" accept="application/json,.json">
     <input id="usbKeyInput" class="hidden" type="file" accept="application/json,.json">
+    <input id="backupVerificationInput" class="hidden" type="file" accept="application/json,.json">
+    <input id="usbKeyVerificationInput" class="hidden" type="file" accept="application/json,.json">
 
     <dialog id="changeMasterDialog" class="modal">
       <form id="changeMasterForm" class="stack" novalidate>
@@ -263,23 +269,56 @@
       </form>
     </dialog>
 
-    <dialog id="usbKeyDialog" class="modal">
+    <dialog id="usbKeyDialog" class="modal usb-key-dialog">
       <form id="usbKeyForm" class="stack" novalidate>
-        <div>
-          <p class="eyebrow">Acceso alternativo</p>
-          <h2>Archivo llave USB</h2>
-          <p id="usbKeyStatus" class="helper"></p>
+        <div id="usbKeySetupStep" class="stack">
+          <div class="usb-key-heading">
+            <p class="eyebrow">Acceso alternativo</p>
+            <h2>Archivo llave USB</h2>
+          </div>
+          <div class="usb-key-status-card" role="status" aria-live="polite">
+            <span class="usb-key-status-icon" aria-hidden="true"><svg><use href="#icon-usb"></use></svg></span>
+            <div>
+              <p class="usb-key-status-label">Estado de la llave</p>
+              <p id="usbKeyStatus"></p>
+            </div>
+          </div>
+          <aside class="usb-key-warning" aria-label="Advertencia de seguridad">
+            <span class="usb-key-warning-icon" aria-hidden="true"><svg><use href="#icon-alert"></use></svg></span>
+            <div>
+              <strong>Guardalos por separado.</strong>
+              <p>Este archivo no contiene tu clave maestra.</p>
+              <p><b>Pero quien tenga este archivo y una copia cifrada de la bóveda podrá abrirla.</b></p>
+              <p>Dejá la llave en tu USB y el respaldo de la bóveda en otro lugar.</p>
+            </div>
+          </aside>
+          <label>
+            <span>Clave maestra actual</span>
+            <input id="usbMaster" type="password" autocomplete="current-password" required>
+          </label>
+          <div class="modal-actions">
+            <button id="cancelUsbKey" class="button secondary" type="button">Cancelar</button>
+            <button id="disableUsbKeyButton" class="button secondary hidden" type="button">Desactivar</button>
+            <button class="button primary" type="submit">Preparar nueva llave</button>
+          </div>
         </div>
-        <p class="helper">El archivo no contiene tu clave maestra. Pero quien tenga este archivo y una copia cifrada de la bóveda podrá abrirla. No los guardes juntos.</p>
-        <label>
-          <span>Clave maestra actual</span>
-          <input id="usbMaster" type="password" autocomplete="current-password" required>
-        </label>
-        <div class="modal-actions">
-          <button id="cancelUsbKey" class="button secondary" type="button">Cancelar</button>
-          <button id="disableUsbKeyButton" class="button secondary hidden" type="button">Desactivar</button>
-          <button class="button primary" type="submit">Crear o reemplazar archivo</button>
-        </div>
+        <section id="usbKeyFileStep" class="stack hidden" aria-live="polite">
+          <div>
+            <p class="eyebrow">Paso final</p>
+            <h2 id="usbKeyFileTitle">Guardá y activá la llave</h2>
+            <p id="usbKeyFileText" class="helper"></p>
+          </div>
+          <div class="usb-key-file-card">
+            <span class="usb-key-status-icon" aria-hidden="true"><svg><use href="#icon-usb"></use></svg></span>
+            <strong id="usbKeyFileName"></strong>
+          </div>
+          <p id="usbKeyFileStatus" class="helper"></p>
+          <div class="modal-actions">
+            <button id="cancelPendingUsbKeyButton" class="button secondary" type="button">Cancelar</button>
+            <button id="verifyPendingUsbKeyButton" class="button secondary hidden" type="button">Elegir archivo guardado</button>
+            <button id="savePendingUsbKeyButton" class="button primary" type="button">Guardar y activar llave</button>
+          </div>
+        </section>
       </form>
     </dialog>
 
@@ -311,6 +350,25 @@
         <div class="modal-actions">
           <button id="continueWithoutBackupButton" class="button secondary" type="button">Continuar sin copia</button>
           <button id="exportThenContinueButton" class="button primary" type="button">Exportar ahora</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="backupVerificationDialog" class="modal" aria-labelledby="backupVerificationTitle">
+      <div class="stack">
+        <div>
+          <p class="eyebrow">Comprobación necesaria</p>
+          <h2 id="backupVerificationTitle">Confirmá la copia cifrada</h2>
+          <p class="helper">El navegador inició la descarga. Para marcar el respaldo como realizado, elegí el mismo archivo que acabás de guardar.</p>
+        </div>
+        <div class="backup-verification-file">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+          <strong id="backupVerificationName"></strong>
+        </div>
+        <p id="backupVerificationStatus" class="helper">Hasta comprobarlo, la bóveda seguirá indicando que necesita una copia.</p>
+        <div class="modal-actions">
+          <button id="cancelBackupVerificationButton" class="button secondary" type="button">Cancelar</button>
+          <button id="selectBackupVerificationButton" class="button primary" type="button">Elegir copia guardada</button>
         </div>
       </div>
     </dialog>

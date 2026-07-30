@@ -14,10 +14,19 @@ const THEME_STORAGE_KEY = 'pwm-theme';
 const USB_KEY_FORMAT = 'pwm-usb-key';
 const USB_KEY_VERSION = 1;
 const USB_KEY_MAX_BYTES = 16 * 1024;
+const BACKUP_MAX_BYTES = 50 * 1024 * 1024;
 const DEK_BYTES = 32;
 const GENERATED_PASSWORD_LENGTH = 20;
 const HISTORY_LIMIT = 200;
 const HOME_BACKGROUND_INTERVAL_MS = 10_000;
+// El índice de bóvedas también es compartido: una única exclusión para todo el
+// origen evita que dos pestañas escriban índices desde snapshots viejos.
+const VAULT_ACCESS_LOCK_NAME = 'pwm-vault-open';
+const VAULT_ACCESS_LEASE_KEY = 'pwm-vault-lease';
+const VAULT_ACCESS_LEASE_MS = 15_000;
+const VAULT_ACCESS_REFRESH_MS = 5_000;
+const VAULT_ACCESS_SETTLE_MS = 80;
+const TAB_INSTANCE_ID = crypto.randomUUID();
 const HOME_BACKGROUNDS = Object.freeze([
   'home-niebla',
   'home-papel',
@@ -124,8 +133,14 @@ const state = {
   autoLockTimer: null,
   noticeTimer: null,
   pendingBackupAction: null,
+  pendingBackupExport: null,
+  pendingUsbKey: null,
   leaveBackupReminderTimer: null,
   beforeUnloadWarningActive: false,
+  dismissedBackupReminderRecord: null,
+  vaultAccess: null,
+  pageSession: 0,
+  usbKeyBusy: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -138,6 +153,246 @@ function showNotice(message, type = 'success') {
   notice.className = `notice ${type}`;
   window.clearTimeout(state.noticeTimer);
   state.noticeTimer = window.setTimeout(() => notice.classList.add('hidden'), 5000);
+}
+
+function vaultAccessName() {
+  return VAULT_ACCESS_LOCK_NAME;
+}
+
+function vaultLeaseKey() {
+  return VAULT_ACCESS_LEASE_KEY;
+}
+
+function readVaultLease() {
+  try {
+    const lease = JSON.parse(localStorage.getItem(vaultLeaseKey()));
+    if (
+      lease
+      && typeof lease.owner === 'string'
+      && typeof lease.token === 'string'
+      && Number.isFinite(lease.expiresAt)
+    ) {
+      return lease;
+    }
+  } catch (_) {
+    // El almacenamiento puede estar desactivado o contener datos inválidos.
+  }
+  return null;
+}
+
+function writeVaultLease(lease) {
+  try {
+    localStorage.setItem(vaultLeaseKey(), JSON.stringify(lease));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function ownsVaultAccess(vaultId = state.vaultId) {
+  const access = state.vaultAccess;
+  if (!access || access.invalidated || (!access.temporary && (!vaultId || access.vaultId !== vaultId))) return false;
+  if (access.kind === 'web-lock') return true;
+  const lease = readVaultLease();
+  return Boolean(
+    lease
+    && lease.owner === TAB_INSTANCE_ID
+    && lease.token === access.token
+    && lease.expiresAt > Date.now(),
+  );
+}
+
+function releaseVaultAccess() {
+  const access = state.vaultAccess;
+  state.vaultAccess = null;
+  disposeVaultAccess(access);
+}
+
+function disposeVaultAccess(access) {
+  if (!access) return;
+  access.invalidated = true;
+
+  // Una escritura que ya estaba en curso no debe poder terminar después de
+  // bloquear la bóveda o abandonar la página.
+  access.transactions?.forEach((transaction) => {
+    try { transaction.abort(); } catch (_) { /* ya terminó */ }
+  });
+  access.transactions?.clear();
+
+  if (access.kind === 'web-lock') {
+    access.release();
+    return;
+  }
+
+  window.clearInterval(access.refreshTimer);
+  const lease = readVaultLease();
+  if (lease?.owner === TAB_INSTANCE_ID && lease.token === access.token) {
+    try {
+      localStorage.removeItem(vaultLeaseKey());
+    } catch (_) {
+      // La pestaña se bloqueará igualmente aunque el navegador impida limpiar la concesión.
+    }
+  }
+}
+
+function handleLostVaultAccess() {
+  if (!state.key) return;
+  lockVault();
+  showNotice(
+    'Esta bóveda se abrió en otra pestaña. Se bloqueó aquí para evitar cambios en conflicto.',
+    'error',
+  );
+}
+
+function refreshVaultLease(access) {
+  if (state.vaultAccess !== access || !ownsVaultAccess(access.vaultId)) {
+    handleLostVaultAccess();
+    return;
+  }
+  const renewed = {
+    owner: TAB_INSTANCE_ID,
+    token: access.token,
+    expiresAt: Date.now() + VAULT_ACCESS_LEASE_MS,
+  };
+  if (!writeVaultLease(renewed)) handleLostVaultAccess();
+}
+
+async function acquireFallbackVaultAccess(vaultId, temporary = false) {
+  const existing = readVaultLease();
+  if (existing && existing.expiresAt > Date.now() && existing.owner !== TAB_INSTANCE_ID) {
+    return null;
+  }
+
+  const token = crypto.randomUUID();
+  const lease = {
+    owner: TAB_INSTANCE_ID,
+    token,
+    expiresAt: Date.now() + VAULT_ACCESS_LEASE_MS,
+  };
+  if (!writeVaultLease(lease)) return null;
+
+  await new Promise((resolve) => window.setTimeout(resolve, VAULT_ACCESS_SETTLE_MS));
+  const confirmed = readVaultLease();
+  if (
+    !confirmed
+    || confirmed.owner !== TAB_INSTANCE_ID
+    || confirmed.token !== token
+    || confirmed.expiresAt <= Date.now()
+  ) {
+    return null;
+  }
+
+  const access = {
+    kind: 'lease',
+    vaultId,
+    temporary,
+    token,
+    refreshTimer: null,
+    transactions: new Set(),
+    session: state.pageSession,
+  };
+  access.refreshTimer = window.setInterval(
+    () => refreshVaultLease(access),
+    VAULT_ACCESS_REFRESH_MS,
+  );
+  return access;
+}
+
+async function acquireWebVaultAccess(vaultId, temporary = false) {
+  return new Promise((resolve) => {
+    let release;
+    const hold = new Promise((releaseLock) => {
+      release = releaseLock;
+    });
+    try {
+      navigator.locks.request(
+        vaultAccessName(),
+        { mode: 'exclusive', ifAvailable: true },
+        async (lock) => {
+          if (!lock) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            kind: 'web-lock',
+            vaultId,
+            temporary,
+            release,
+            invalidated: false,
+            transactions: new Set(),
+            session: state.pageSession,
+          });
+          await hold;
+        },
+      ).catch(() => resolve(null));
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+async function acquireVaultAccess(vaultId, temporary = false) {
+  if (ownsVaultAccess(vaultId)) return true;
+  if (state.vaultAccess) releaseVaultAccess();
+
+  const session = state.pageSession;
+
+  let access = null;
+  if (navigator.locks?.request) access = await acquireWebVaultAccess(vaultId, temporary);
+  if (!access && !navigator.locks?.request) access = await acquireFallbackVaultAccess(vaultId, temporary);
+  if (!access || session !== state.pageSession) {
+    disposeVaultAccess(access);
+    return false;
+  }
+
+  access.session = session;
+  state.vaultAccess = access;
+  return true;
+}
+
+async function withTemporaryVaultAccess(callback) {
+  if (state.vaultAccess) return callback(captureVaultAccess());
+  const acquired = await acquireVaultAccess('temporary', true);
+  if (!acquired) throw new Error('Otra pestaña está actualizando las bóvedas. Intentá de nuevo.');
+  const access = captureVaultAccess();
+  try {
+    return await callback(access);
+  } finally {
+    if (state.vaultAccess === access) releaseVaultAccess();
+  }
+}
+
+function captureVaultAccess() {
+  const access = state.vaultAccess;
+  if (!access || access.invalidated || !ownsVaultAccess(access.vaultId)) {
+    throw new Error('La bóveda está abierta en otra pestaña o la sesión terminó.');
+  }
+  return access;
+}
+
+function assertVaultAccess(access, requireUnlocked = false) {
+  if (
+    !access
+    || state.vaultAccess !== access
+    || access.invalidated
+    || access.session !== state.pageSession
+    || !ownsVaultAccess(access.vaultId)
+    || (requireUnlocked && (!state.key || !state.vaultId || state.vaultId !== access.vaultId))
+  ) {
+    throw new Error('La sesión de la bóveda terminó antes de completar la operación.');
+  }
+}
+
+function handleVaultLeaseStorage(event) {
+  const access = state.vaultAccess;
+  if (
+    access?.kind !== 'lease'
+    || event.key !== vaultLeaseKey()
+    || ownsVaultAccess(access.vaultId)
+  ) {
+    return;
+  }
+  handleLostVaultAccess();
 }
 
 function applyTheme(theme) {
@@ -229,7 +484,13 @@ function renderAppearanceOptions() {
       button.dataset.background = preset.id;
       button.setAttribute('role', 'radio');
       button.setAttribute('aria-checked', 'false');
-      button.innerHTML = `<span class="appearance-swatch" data-background="${preset.id}" aria-hidden="true"></span><span>${preset.name}</span>`;
+      const swatch = document.createElement('span');
+      swatch.className = 'appearance-swatch';
+      swatch.dataset.background = preset.id;
+      swatch.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.textContent = preset.name;
+      button.append(swatch, label);
       choices.append(button);
     });
     section.append(title, choices);
@@ -268,19 +529,35 @@ async function saveAppearance() {
   if (!state.key || !state.record || state.record.version !== 2 || !state.vaultId) {
     throw new Error('Bóveda bloqueada');
   }
+  const access = captureVaultAccess();
+  assertVaultAccess(access, true);
+  const expectedSnapshot = vaultRecordSnapshot(state.record);
   const encrypted = await encryptPayloadV2(state.key, {
     entries: state.entries,
     history: state.history,
     appearance: state.appearance,
   });
   const record = { ...state.record, ...encrypted, updatedAt: new Date().toISOString() };
-  await writeValues([[vaultRecordKey(state.vaultId), record]]);
+  const committed = await commitVaultSnapshot(
+    access,
+    state.vaultId,
+    expectedSnapshot,
+    () => true,
+    (index) => ({
+      record,
+      index: updateVaultMetadata(index, state.vaultId, state.vaultName, record.updatedAt),
+    }),
+  );
+  assertVaultAccess(access, true);
   state.record = record;
+  state.index = committed.index;
 }
 
 async function applyAppearance() {
   const previous = state.appearance;
   const next = normalizeAppearance(state.appearanceDraft);
+  const access = state.vaultAccess;
+  const session = state.pageSession;
   state.appearance = next;
   applyVaultBackground(next);
   $('applyAppearanceButton').disabled = true;
@@ -289,8 +566,10 @@ async function applyAppearance() {
     closeAppearanceDialog(false);
     showNotice('Apariencia guardada para esta bóveda.');
   } catch (_) {
-    state.appearance = previous;
-    applyVaultBackground(previous);
+    if (state.pageSession === session && state.vaultAccess === access && state.key) {
+      state.appearance = previous;
+      applyVaultBackground(previous);
+    }
     showNotice('No se pudo guardar la apariencia.', 'error');
   } finally {
     $('applyAppearanceButton').disabled = false;
@@ -529,37 +808,162 @@ async function readValue(key) {
   });
 }
 
-async function writeValues(entries) {
+function trackWriteTransaction(access, database, transaction) {
+  if (!access.transactions) access.transactions = new Set();
+  access.transactions.add(transaction);
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    access.transactions?.delete(transaction);
+    database.close();
+  };
+}
+
+async function writeValues(entries, access) {
+  assertVaultAccess(access);
   const database = await openDatabase();
+  assertVaultAccess(access);
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
-    entries.forEach(([key, value]) => store.put(value, key));
+    const close = trackWriteTransaction(access, database, transaction);
+    try {
+      entries.forEach(([key, value]) => store.put(value, key));
+    } catch (_) {
+      close();
+      try { transaction.abort(); } catch (_) { /* ya terminó */ }
+      reject(error);
+      return;
+    }
     transaction.oncomplete = () => {
-      database.close();
-      resolve();
+      close();
+      try {
+        assertVaultAccess(access);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     };
     transaction.onerror = () => {
-      database.close();
+      close();
       reject(transaction.error);
+    };
+    transaction.onabort = () => {
+      close();
+      reject(transaction.error || new Error('La escritura se canceló al bloquear la bóveda.'));
     };
   });
 }
 
-async function writeAndDeleteValues(entries, keys) {
+async function writeAndDeleteValues(entries, keys, access) {
+  assertVaultAccess(access);
   const database = await openDatabase();
+  assertVaultAccess(access);
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
-    entries.forEach(([key, value]) => store.put(value, key));
-    keys.forEach((key) => store.delete(key));
+    const close = trackWriteTransaction(access, database, transaction);
+    try {
+      entries.forEach(([key, value]) => store.put(value, key));
+      keys.forEach((key) => store.delete(key));
+    } catch (error) {
+      close();
+      try { transaction.abort(); } catch (_) { /* ya terminó */ }
+      reject(error);
+      return;
+    }
     transaction.oncomplete = () => {
-      database.close();
-      resolve();
+      close();
+      try {
+        assertVaultAccess(access);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     };
     transaction.onerror = () => {
-      database.close();
+      close();
       reject(transaction.error);
+    };
+    transaction.onabort = () => {
+      close();
+      reject(transaction.error || new Error('La escritura se canceló al bloquear la bóveda.'));
+    };
+  });
+}
+
+// Lee y escribe el registro y su índice en una sola transacción. Así una
+// exportación o activación no puede confirmar un snapshot que otra pestaña
+// haya reemplazado entre sus lecturas y la escritura.
+async function commitVaultSnapshot(access, vaultId, expectedRecordSnapshot, expectedMetadata, build) {
+  assertVaultAccess(access, true);
+  const database = await openDatabase();
+  assertVaultAccess(access, true);
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const close = trackWriteTransaction(access, database, transaction);
+    const indexRequest = store.get(INDEX_KEY);
+    const recordRequest = store.get(vaultRecordKey(vaultId));
+    let result = null;
+
+    const fail = (message) => {
+      try { transaction.abort(); } catch (_) { /* ya terminó */ }
+      reject(new Error(message));
+    };
+
+    const tryCommit = () => {
+      if (indexRequest.readyState !== 'done' || recordRequest.readyState !== 'done') return;
+      try {
+        assertVaultAccess(access, true);
+        const storedIndex = indexRequest.result;
+        const storedRecord = recordRequest.result;
+        if (!validateVaultIndex(storedIndex) || !validateVaultRecord(storedRecord)) {
+          fail('No pude comprobar el estado de la bóveda.');
+          return;
+        }
+        const normalized = ensureVaultMetadata(storedIndex).index;
+        const metadata = normalized.vaults.find((vault) => vault.id === vaultId);
+        if (
+          !metadata
+          || vaultRecordSnapshot(storedRecord) !== expectedRecordSnapshot
+          || !expectedMetadata(metadata)
+        ) {
+          fail('La bóveda cambió antes de completar la operación.');
+          return;
+        }
+        result = build(normalized, metadata, storedRecord);
+        if (!result || !result.index) {
+          fail('No pude preparar la actualización de la bóveda.');
+          return;
+        }
+        if (result.record) store.put(result.record, vaultRecordKey(vaultId));
+        store.put(result.index, INDEX_KEY);
+      } catch (error) {
+        fail(error.message || 'No pude completar la operación.');
+      }
+    };
+    indexRequest.onsuccess = tryCommit;
+    recordRequest.onsuccess = tryCommit;
+    indexRequest.onerror = () => fail('No pude comprobar el estado de la bóveda.');
+    recordRequest.onerror = () => fail('No pude comprobar el estado de la bóveda.');
+    transaction.oncomplete = () => {
+      close();
+      try {
+        assertVaultAccess(access, true);
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    transaction.onerror = () => {
+      close();
+      reject(transaction.error || new Error('No pude completar la operación.'));
+    };
+    transaction.onabort = () => {
+      close();
+      reject(transaction.error || new Error('La escritura se canceló al bloquear la bóveda.'));
     };
   });
 }
@@ -692,17 +1096,63 @@ function ensureVaultMetadata(index) {
   };
 }
 
+async function readVaultIndexWithAccess(access, allowEmpty = false) {
+  assertVaultAccess(access);
+  const index = await readValue(INDEX_KEY);
+  assertVaultAccess(access);
+  if (!validateVaultIndex(index)) {
+    if (allowEmpty && index === null) return emptyIndex();
+    throw new Error('No pude leer el índice de bóvedas.');
+  }
+  return ensureVaultMetadata(index).index;
+}
+
 async function loadVaultIndex() {
   const storedIndex = await readValue(INDEX_KEY);
   if (validateVaultIndex(storedIndex)) {
     const normalized = ensureVaultMetadata(storedIndex);
-    state.index = normalized.index;
+    const nextIndex = { ...normalized.index };
     let changed = normalized.changed;
-    if (!state.index.vaults.some((vault) => vault.id === state.index.activeVaultId)) {
-      state.index.activeVaultId = state.index.vaults[0]?.id ?? null;
+    if (!nextIndex.vaults.some((vault) => vault.id === nextIndex.activeVaultId)) {
+      nextIndex.activeVaultId = nextIndex.vaults[0]?.id ?? null;
       changed = true;
     }
-    if (changed) await writeValues([[INDEX_KEY, state.index]]);
+    state.index = nextIndex;
+
+    // Una migración anterior pudo dejar la copia `current` junto al nuevo
+    // registro. Se elimina en una transacción cuando aún exista.
+    const legacyRecord = await readValue(LEGACY_RECORD_KEY);
+    if (!changed && !validateVaultRecord(legacyRecord)) return;
+    try {
+      await withTemporaryVaultAccess(async (access) => {
+        const freshIndex = await readValue(INDEX_KEY);
+        const freshLegacyRecord = await readValue(LEGACY_RECORD_KEY);
+        assertVaultAccess(access);
+        if (!validateVaultIndex(freshIndex)) throw new Error('No pude leer el índice de bóvedas.');
+        const freshNormalized = ensureVaultMetadata(freshIndex);
+        const repairedIndex = { ...freshNormalized.index };
+        let needsWrite = freshNormalized.changed;
+        if (!repairedIndex.vaults.some((vault) => vault.id === repairedIndex.activeVaultId)) {
+          repairedIndex.activeVaultId = repairedIndex.vaults[0]?.id ?? null;
+          needsWrite = true;
+        }
+        if (!needsWrite && !validateVaultRecord(freshLegacyRecord)) {
+          state.index = repairedIndex;
+          return;
+        }
+        await writeAndDeleteValues(
+          [[INDEX_KEY, repairedIndex]],
+          validateVaultRecord(freshLegacyRecord) ? [LEGACY_RECORD_KEY] : [],
+          access,
+        );
+        assertVaultAccess(access);
+        state.index = repairedIndex;
+      });
+    } catch (_) {
+      // La pestaña sigue pudiendo mostrar el índice normalizado en memoria si
+      // otra tiene el lock. La reparación se reintentará cuando quede libre,
+      // sin fingir que el almacenamiento local dejó de existir.
+    }
     return;
   }
 
@@ -712,32 +1162,61 @@ async function loadVaultIndex() {
     return;
   }
 
-  const vaultId = crypto.randomUUID();
-  const createdAt = legacyRecord.createdAt || new Date().toISOString();
-  state.index = {
-    ...emptyIndex(),
-    activeVaultId: vaultId,
-    vaults: [{
-      id: vaultId,
-      uid: crypto.randomUUID(),
-      name: 'Mi bóveda',
-      backupVersion: 0,
-      usbKeyVersion: 0,
-      backupReason: null,
-      needsBackup: false,
-      createdAt,
-      updatedAt: legacyRecord.updatedAt || createdAt,
-    }],
-  };
-  await writeValues([
-    [vaultRecordKey(vaultId), legacyRecord],
-    [INDEX_KEY, state.index],
-  ]);
+  await withTemporaryVaultAccess(async (access) => {
+    // Otra pestaña puede haber terminado la migración mientras ésta esperaba
+    // el lock global. Nunca sobrescribimos ese índice con un snapshot viejo.
+    const currentIndex = await readValue(INDEX_KEY);
+    assertVaultAccess(access);
+    if (validateVaultIndex(currentIndex)) {
+      const normalized = ensureVaultMetadata(currentIndex).index;
+      const currentLegacy = await readValue(LEGACY_RECORD_KEY);
+      assertVaultAccess(access);
+      if (validateVaultRecord(currentLegacy)) {
+        await writeAndDeleteValues([[INDEX_KEY, normalized]], [LEGACY_RECORD_KEY], access);
+      }
+      state.index = normalized;
+      return;
+    }
+
+    const currentLegacy = await readValue(LEGACY_RECORD_KEY);
+    assertVaultAccess(access);
+    if (!validateVaultRecord(currentLegacy)) {
+      state.index = emptyIndex();
+      return;
+    }
+    const vaultId = crypto.randomUUID();
+    const createdAt = currentLegacy.createdAt || new Date().toISOString();
+    const nextIndex = {
+      ...emptyIndex(),
+      activeVaultId: vaultId,
+      vaults: [{
+        id: vaultId,
+        uid: crypto.randomUUID(),
+        name: 'Mi bóveda',
+        backupVersion: 0,
+        usbKeyVersion: 0,
+        backupReason: null,
+        needsBackup: false,
+        createdAt,
+        updatedAt: currentLegacy.updatedAt || createdAt,
+      }],
+    };
+    await writeAndDeleteValues(
+      [
+        [vaultRecordKey(vaultId), currentLegacy],
+        [INDEX_KEY, nextIndex],
+      ],
+      [LEGACY_RECORD_KEY],
+      access,
+    );
+    assertVaultAccess(access);
+    state.index = nextIndex;
+  });
 }
 
-function vaultNameExists(name) {
+function vaultNameExistsInIndex(index, name) {
   const normalized = name.trim().toLocaleLowerCase('es');
-  return state.index.vaults.some(
+  return index.vaults.some(
     (vault) => vault.name.trim().toLocaleLowerCase('es') === normalized,
   );
 }
@@ -865,7 +1344,9 @@ function updateBackupReminder() {
   const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
   const needsBackup = Boolean(state.vaultId && metadata?.needsBackup);
   const reminder = BACKUP_REMINDERS[metadata?.backupReason] || BACKUP_REMINDERS.credentials;
-  $('backupReminder').classList.toggle('hidden', !needsBackup);
+  if (!needsBackup) state.dismissedBackupReminderRecord = null;
+  const reminderDismissed = needsBackup && state.dismissedBackupReminderRecord === state.record;
+  $('backupReminder').classList.toggle('hidden', !needsBackup || reminderDismissed);
   $('exportButton').classList.toggle('backup-due', needsBackup);
   if (needsBackup) {
     $('backupReminderTitle').textContent = reminder.title;
@@ -885,6 +1366,12 @@ function updateBackupReminder() {
     $('exportButton').removeAttribute('aria-describedby');
   }
   syncBeforeUnloadWarning();
+}
+
+function dismissBackupReminder() {
+  if (!activeVaultNeedsBackup() || !state.record) return;
+  state.dismissedBackupReminderRecord = state.record;
+  updateBackupReminder();
 }
 
 function hasPendingBackups() {
@@ -949,8 +1436,8 @@ async function exportThenContinue() {
   const button = $('exportThenContinueButton');
   button.disabled = true;
   try {
-    await downloadBackup();
-    if (!activeVaultNeedsBackup()) {
+    const completed = await downloadBackup();
+    if (completed && !activeVaultNeedsBackup()) {
       const action = state.pendingBackupAction;
       closePendingBackupDialog();
       action?.();
@@ -964,6 +1451,9 @@ async function saveVault(backupReason = 'credentials', historyEvent = null) {
   if (!state.key || !state.keyBytes || !state.record || state.record.version !== 2 || !state.vaultId) {
     throw new Error('Bóveda bloqueada');
   }
+  const access = captureVaultAccess();
+  assertVaultAccess(access, true);
+  const expectedSnapshot = vaultRecordSnapshot(state.record);
   const nextHistory = historyEvent
     ? historyWithEvent(state.history, historyEvent)
     : state.history;
@@ -974,20 +1464,26 @@ async function saveVault(backupReason = 'credentials', historyEvent = null) {
   });
   const updatedAt = new Date().toISOString();
   const nextRecord = { ...state.record, ...encrypted, updatedAt };
-  const nextIndex = updateVaultMetadata(
-    state.index,
+  const committed = await commitVaultSnapshot(
+    access,
     state.vaultId,
-    state.vaultName,
-    updatedAt,
-    { needsBackup: true, backupReason },
+    expectedSnapshot,
+    () => true,
+    (index) => ({
+      record: nextRecord,
+      index: updateVaultMetadata(
+        index,
+        state.vaultId,
+        state.vaultName,
+        updatedAt,
+        { needsBackup: true, backupReason },
+      ),
+    }),
   );
-  await writeValues([
-    [vaultRecordKey(state.vaultId), nextRecord],
-    [INDEX_KEY, nextIndex],
-  ]);
+  assertVaultAccess(access, true);
   state.record = nextRecord;
   state.history = nextHistory;
-  state.index = nextIndex;
+  state.index = committed.index;
   renderVaultSelect(state.vaultId);
   resetAutoLock();
 }
@@ -1297,13 +1793,22 @@ async function createVault(event) {
   const master = $('setupMaster').value;
   const confirmMaster = $('setupConfirm').value;
   if (!vaultName) return showNotice('Ponéle un nombre a la bóveda.', 'error');
-  if (vaultNameExists(vaultName)) return showNotice('Ya existe una bóveda con ese nombre.', 'error');
   if (master.length < 12) return showNotice('Usá una clave maestra de al menos 12 caracteres.', 'error');
   if (master !== confirmMaster) return showNotice('Las dos claves maestras no coinciden.', 'error');
 
   let pendingKeyBytes;
+  let access;
   try {
     const vaultId = crypto.randomUUID();
+    if (!await acquireVaultAccess(vaultId)) {
+      showNotice('No se pudo reservar esta bóveda para esta pestaña.', 'error');
+      return;
+    }
+    access = captureVaultAccess();
+    const currentIndex = await readVaultIndexWithAccess(access, true);
+    if (vaultNameExistsInIndex(currentIndex, vaultName)) {
+      throw new Error(`Ya existe una bóveda llamada “${vaultName}”.`);
+    }
     const createdAt = new Date().toISOString();
     const initialHistory = [
       createHistoryEvent('vault-created'),
@@ -1316,10 +1821,10 @@ async function createVault(event) {
     const { record, key, keyBytes } = created;
     pendingKeyBytes = keyBytes;
     const nextIndex = {
-      ...state.index,
+      ...currentIndex,
       activeVaultId: vaultId,
       vaults: [
-        ...state.index.vaults,
+        ...currentIndex.vaults,
         {
           id: vaultId,
           uid: crypto.randomUUID(),
@@ -1333,10 +1838,12 @@ async function createVault(event) {
         },
       ],
     };
+    assertVaultAccess(access);
     await writeValues([
       [vaultRecordKey(vaultId), record],
       [INDEX_KEY, nextIndex],
-    ]);
+    ], access);
+    assertVaultAccess(access);
 
     state.key = key;
     state.keyBytes = keyBytes;
@@ -1355,10 +1862,15 @@ async function createVault(event) {
     renderEntries();
     resetAutoLock();
     showNotice(`Bóveda “${vaultName}” creada.`);
-  } catch (_) {
-    state.key = null;
+  } catch (error) {
+    if (state.vaultAccess === access) releaseVaultAccess();
     pendingKeyBytes?.fill(0);
-    showNotice('No pude crear la bóveda en este navegador.', 'error');
+    showNotice(
+      error.message?.startsWith('Ya existe una bóveda')
+        ? error.message
+        : 'No pude crear la bóveda en este navegador.',
+      'error',
+    );
   }
 }
 
@@ -1366,12 +1878,24 @@ async function unlockVault(event) {
   event.preventDefault();
   const vaultId = $('vaultSelect').value;
   const master = $('unlockMaster').value;
-  const metadata = state.index.vaults.find((vault) => vault.id === vaultId);
-  if (!vaultId || !metadata || !master) return;
+  if (!vaultId || !master) return;
 
   let pendingKeyBytes;
+  let access;
   try {
+    if (!await acquireVaultAccess(vaultId)) {
+      showNotice(
+        'Esta bóveda ya está abierta en otra pestaña. Bloqueala allí antes de continuar.',
+        'error',
+      );
+      return;
+    }
+    access = captureVaultAccess();
+    const currentIndex = await readVaultIndexWithAccess(access);
+    const metadata = currentIndex.vaults.find((vault) => vault.id === vaultId);
+    if (!metadata) throw new Error('La bóveda ya no existe en este navegador.');
     let record = await readValue(vaultRecordKey(vaultId));
+    assertVaultAccess(access);
     if (!validateVaultRecord(record)) throw new Error('No existe una bóveda válida');
     let key;
     let keyBytes;
@@ -1402,7 +1926,7 @@ async function unlockVault(event) {
       payload = await decryptPayloadV2(key, record);
     }
     const nextIndex = updateVaultMetadata(
-      state.index,
+      currentIndex,
       vaultId,
       metadata.name,
       record.updatedAt,
@@ -1410,17 +1934,26 @@ async function unlockVault(event) {
     );
     const writes = [[INDEX_KEY, nextIndex]];
     if (migrated) writes.unshift([vaultRecordKey(vaultId), record]);
-    await writeValues(writes);
+    assertVaultAccess(access);
+    await writeValues(writes, access);
+    assertVaultAccess(access);
     activateUnlockedVault(vaultId, metadata.name, record, key, keyBytes, payload, nextIndex);
     pendingKeyBytes = null;
     showNotice(`Bóveda “${metadata.name}” desbloqueada.`);
-  } catch (_) {
+  } catch (error) {
+    if (state.vaultAccess === access) releaseVaultAccess();
     pendingKeyBytes?.fill(0);
-    showNotice('La clave maestra no es correcta o la bóveda está dañada.', 'error');
+    showNotice(
+      error.message === 'La bóveda ya no existe en este navegador.'
+        ? error.message
+        : 'La clave maestra no es correcta o la bóveda está dañada.',
+      'error',
+    );
   }
 }
 
 function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payload, index) {
+  if (!ownsVaultAccess(vaultId)) throw new Error('No se pudo reservar la bóveda');
   state.key = key;
   state.keyBytes = keyBytes;
   state.entries = payload.entries.map(normalizeEntry);
@@ -1464,11 +1997,18 @@ async function unlockWithUsbKey(event) {
 
   let usbKey;
   let pendingKeyBytes;
+  let access;
   try {
     usbKey = await readUsbKeyFile(file);
+    if (!await acquireVaultAccess('temporary', true)) {
+      throw new Error('Esta bóveda ya está abierta en otra pestaña. Bloqueala allí antes de continuar.');
+    }
+    access = captureVaultAccess();
+    const currentIndex = await readVaultIndexWithAccess(access);
     const matches = [];
-    for (const metadata of state.index.vaults) {
+    for (const metadata of currentIndex.vaults) {
       const record = await readValue(vaultRecordKey(metadata.id));
+      assertVaultAccess(access);
       if (
         validateVaultRecord(record)
         && record.version === 2
@@ -1484,21 +2024,28 @@ async function unlockWithUsbKey(event) {
 
     const [{ metadata, record }] = matches;
     const vaultId = metadata.id;
+    access.vaultId = vaultId;
+    access.temporary = false;
+    assertVaultAccess(access);
     const key = await importAesKey(usbKey.secret);
     const keyBytes = await unwrapDek(key, record.usbUnlock, aad('usb-wrap', usbKey.keyId));
     pendingKeyBytes = keyBytes;
     const payloadKey = await importAesKey(keyBytes);
     const payload = await decryptPayloadV2(payloadKey, record);
-    const nextIndex = { ...state.index, activeVaultId: vaultId };
-    await writeValues([[INDEX_KEY, nextIndex]]);
+    const nextIndex = { ...currentIndex, activeVaultId: vaultId };
+    assertVaultAccess(access);
+    await writeValues([[INDEX_KEY, nextIndex]], access);
+    assertVaultAccess(access);
     activateUnlockedVault(vaultId, metadata.name, record, payloadKey, keyBytes, payload, nextIndex);
     pendingKeyBytes = null;
     showNotice(`Bóveda “${metadata.name}” desbloqueada con el archivo llave.`);
   } catch (error) {
+    if (state.vaultAccess === access) releaseVaultAccess();
     pendingKeyBytes?.fill(0);
     const knownMessages = [
       'El archivo llave no corresponde a ninguna bóveda de este navegador.',
       'El archivo llave coincide con varias bóvedas duplicadas.',
+      'Esta bóveda ya está abierta en otra pestaña. Bloqueala allí antes de continuar.',
       VAULT_AS_KEY_MESSAGE,
     ];
     showNotice(
@@ -1514,6 +2061,8 @@ async function unlockWithUsbKey(event) {
 
 function lockVault(expired = false) {
   window.clearTimeout(state.autoLockTimer);
+  state.pageSession += 1;
+  releaseVaultAccess();
   if ($('changeMasterDialog').open) {
     $('changeMasterForm').reset();
     $('changeMasterDialog').close();
@@ -1522,11 +2071,16 @@ function lockVault(expired = false) {
     $('usbKeyForm').reset();
     $('usbKeyDialog').close();
   }
+  $('usbKeyVerificationInput').value = '';
+  clearPendingUsbKey();
   if ($('deleteVaultDialog').open) {
     $('deleteVaultForm').reset();
     $('deleteVaultDialog').close();
   }
-  if ($('pendingBackupDialog').open) closePendingBackupDialog();
+  closePendingBackupDialog();
+  $('backupVerificationInput').value = '';
+  clearPendingBackupExport();
+  if ($('backupVerificationDialog').open) $('backupVerificationDialog').close();
   if ($('appearanceDialog').open) closeAppearanceDialog(false);
   if ($('historyDialog').open) $('historyDialog').close();
   clearVaultDom();
@@ -1554,6 +2108,43 @@ function lockVault(expired = false) {
   if (expired) showNotice('La bóveda se bloqueó por inactividad.');
 }
 
+function lockVaultOnPageExit() {
+  clearLeaveBackupReminder();
+  if (state.key) {
+    lockVault();
+    return;
+  }
+  // Pagehide también puede ocurrir durante crear/desbloquear, cuando todavía
+  // no existe state.key pero sí hay un lock o claves escritas en formularios.
+  state.pageSession += 1;
+  releaseVaultAccess();
+  $('setupForm').reset();
+  $('setupMaster').value = '';
+  $('setupConfirm').value = '';
+  $('unlockForm').reset();
+  setMasterUnlockExpanded(false);
+  $('usbKeyForm').reset();
+  clearPendingUsbKey();
+}
+
+async function lockRestoredVault(event) {
+  if (!event.persisted) return;
+  lockVaultOnPageExit();
+  try {
+    await loadVaultIndex();
+    renderVaultSelect();
+    if (state.index.vaults.length) {
+      setScreen('unlock');
+    } else {
+      showSetup(false);
+    }
+  } catch (_) {
+    state.index = emptyIndex();
+    showSetup(false);
+    showNotice('No pude restaurar las bóvedas de este navegador.', 'error');
+  }
+}
+
 async function saveEntry(event) {
   event.preventDefault();
   const service = $('service').value.trim();
@@ -1576,7 +2167,11 @@ async function saveEntry(event) {
   });
 
   const previousEntries = state.entries;
+  let access;
+  let session;
   try {
+    access = captureVaultAccess();
+    session = state.pageSession;
     state.entries = previous
       ? state.entries.map((item) => (item.id === id ? entry : item))
       : [...state.entries, entry];
@@ -1593,7 +2188,9 @@ async function saveEntry(event) {
       ? 'Cambios guardados. Hacé una copia urgente en tu USB: si perdés este navegador, podrías recuperar una versión anterior.'
       : 'Contraseña guardada. Hacé una copia urgente en tu USB: si perdés este navegador, podrías perder esta credencial.');
   } catch (_) {
-    state.entries = previousEntries;
+    if (state.pageSession === session && state.vaultAccess === access && state.key) {
+      state.entries = previousEntries;
+    }
     showNotice('No se pudo guardar el cambio.', 'error');
   }
 }
@@ -1602,7 +2199,11 @@ async function deleteEntry(id) {
   const entry = state.entries.find((item) => item.id === id);
   if (!entry || !window.confirm(`¿Eliminar la contraseña de ${entry.service}?`)) return;
   const previousEntries = state.entries;
+  let access;
+  let session;
   try {
+    access = captureVaultAccess();
+    session = state.pageSession;
     state.entries = state.entries.filter((item) => item.id !== id);
     await saveVault(
       'credentials',
@@ -1612,7 +2213,9 @@ async function deleteEntry(id) {
     renderEntries();
     showNotice('Contraseña eliminada. Actualizá la copia en tu USB ahora; si perdés este navegador, un respaldo anterior todavía podría contenerla.');
   } catch (_) {
-    state.entries = previousEntries;
+    if (state.pageSession === session && state.vaultAccess === access && state.key) {
+      state.entries = previousEntries;
+    }
     showNotice('No se pudo eliminar la contraseña.', 'error');
   }
 }
@@ -1627,50 +2230,213 @@ function safeFileName(name) {
     || 'boveda';
 }
 
-async function downloadBackup() {
-  if (!state.record || !state.vaultId) return;
+function canUseSavePicker() {
+  return window.isSecureContext && typeof window.showSaveFilePicker === 'function';
+}
+
+function isCancelledFileOperation(error) {
+  return error?.name === 'AbortError';
+}
+
+function triggerTextDownload(text, fileName) {
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+async function saveTextWithPicker(text, fileName, description) {
+  let writable = null;
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: fileName,
+      types: [{
+        description,
+        accept: { 'application/json': ['.json'] },
+      }],
+    });
+    writable = await handle.createWritable();
+    await writable.write(text);
+    await writable.close();
+    writable = null;
+    const savedFile = await handle.getFile();
+    if (await savedFile.text() !== text) throw new Error('El archivo guardado no pudo comprobarse.');
+    return { saved: true };
+  } catch (error) {
+    if (writable) {
+      try {
+        await writable.abort();
+      } catch (_) {
+        // La bóveda sigue pendiente aunque el navegador no pueda abortar el archivo parcial.
+      }
+    }
+    return { saved: false, cancelled: isCancelledFileOperation(error), error };
+  }
+}
+
+function vaultRecordSnapshot(record) {
+  return JSON.stringify(record);
+}
+
+function clearPendingBackupExport() {
+  if (state.pendingBackupExport) state.pendingBackupExport.text = '';
+  state.pendingBackupExport = null;
+}
+
+function prepareBackupExport() {
+  if (!state.record || !state.vaultId) return null;
   const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
   if (!metadata || !validUuid(metadata.uid)) {
-    showNotice('No pude identificar esta bóveda para exportarla.', 'error');
-    return;
+    showNotice('No pude identificar esta b\u00f3veda para exportarla.', 'error');
+    return null;
   }
+  const backupVersion = metadata.backupVersion + 1;
+  const backup = {
+    format: 'pwm-vault-backup',
+    version: 3,
+    vaultUid: metadata.uid,
+    backupVersion,
+    usbKeyVersion: metadata.usbKeyVersion,
+    name: state.vaultName,
+    exportedAt: new Date().toISOString(),
+    vault: state.record,
+  };
+  return {
+    vaultId: state.vaultId,
+    vaultUid: metadata.uid,
+    previousBackupVersion: metadata.backupVersion,
+    backupVersion,
+    recordSnapshot: vaultRecordSnapshot(state.record),
+    text: JSON.stringify(backup, null, 2),
+    fileName: `${safeFileName(state.vaultName)}-boveda-v${backupVersion}.pwm.json`,
+  };
+}
+
+async function completeBackupExport(pending) {
+  const access = captureVaultAccess();
+  if (
+    !pending
+    || !state.key
+    || state.vaultId !== pending.vaultId
+    || !state.record
+    || vaultRecordSnapshot(state.record) !== pending.recordSnapshot
+  ) {
+    throw new Error('La b\u00f3veda cambi\u00f3 mientras se guardaba la copia. Exportala otra vez.');
+  }
+
+  const committed = await commitVaultSnapshot(
+    access,
+    pending.vaultId,
+    pending.recordSnapshot,
+    (metadata) => metadata.uid === pending.vaultUid
+      && metadata.backupVersion === pending.previousBackupVersion,
+    (index) => ({
+      index: updateVaultMetadata(
+        index,
+        pending.vaultId,
+        state.vaultName,
+        state.record.updatedAt,
+        { backupVersion: pending.backupVersion, backupReason: null, needsBackup: false },
+      ),
+    }),
+  );
+  assertVaultAccess(access, true);
+  state.index = committed.index;
+  clearPendingBackupExport();
+  updateBackupReminder();
+  showNotice(`Copia cifrada v${pending.backupVersion} de \u201c${state.vaultName}\u201d guardada y comprobada.`);
+  resetAutoLock();
+}
+
+function openBackupVerificationDialog() {
+  const pending = state.pendingBackupExport;
+  if (!pending) return;
+  $('backupVerificationName').textContent = pending.fileName;
+  $('backupVerificationStatus').textContent = 'Hasta comprobarla, la b\u00f3veda seguir\u00e1 indicando que necesita una copia.';
+  if (!$('backupVerificationDialog').open) $('backupVerificationDialog').showModal();
+  $('selectBackupVerificationButton').focus();
+}
+
+function closeBackupVerificationDialog(discard = true) {
+  if (discard) clearPendingBackupExport();
+  $('backupVerificationInput').value = '';
+  if ($('backupVerificationDialog').open) $('backupVerificationDialog').close();
+}
+
+function cancelBackupVerification() {
+  closeBackupVerificationDialog();
+  if (state.pendingBackupAction) closePendingBackupDialog();
+  showNotice('El respaldo sigue pendiente: no se comprob\u00f3 una copia nueva.', 'error');
+}
+
+function continueAfterVerifiedBackup() {
+  const action = state.pendingBackupAction;
+  if (!action) return;
+  closePendingBackupDialog();
+  action();
+}
+
+async function verifyPendingBackupFile(event) {
+  const [file] = event.target.files;
+  event.target.value = '';
+  const pending = state.pendingBackupExport;
+  if (!file || !pending) return;
+  $('selectBackupVerificationButton').disabled = true;
+  try {
+    if (file.size <= 0 || file.size > BACKUP_MAX_BYTES) {
+      throw new Error('Ese archivo no puede ser la copia cifrada reci\u00e9n creada.');
+    }
+    if (await file.text() !== pending.text) {
+      throw new Error('Ese archivo no es la copia cifrada que acab\u00e1s de exportar.');
+    }
+    await completeBackupExport(pending);
+    closeBackupVerificationDialog(false);
+    continueAfterVerifiedBackup();
+  } catch (error) {
+    $('backupVerificationStatus').textContent = error.message || 'No pude comprobar esa copia.';
+    showNotice(error.message || 'No pude comprobar esa copia.', 'error');
+  } finally {
+    $('selectBackupVerificationButton').disabled = false;
+  }
+}
+
+async function downloadBackup() {
+  if (state.pendingBackupExport) {
+    openBackupVerificationDialog();
+    return false;
+  }
+  const pending = prepareBackupExport();
+  if (!pending) return false;
   const button = $('exportButton');
-  if (button.disabled) return;
+  if (button.disabled) return false;
   button.disabled = true;
   try {
-    const backupVersion = metadata.backupVersion + 1;
-    const nextIndex = updateVaultMetadata(
-      state.index,
-      state.vaultId,
-      state.vaultName,
-      state.record.updatedAt,
-      { backupVersion, backupReason: null, needsBackup: false },
-    );
-    const backup = {
-      format: 'pwm-vault-backup',
-      version: 3,
-      vaultUid: metadata.uid,
-      backupVersion,
-      usbKeyVersion: metadata.usbKeyVersion,
-      name: state.vaultName,
-      exportedAt: new Date().toISOString(),
-      vault: state.record,
-    };
-    await writeValues([[INDEX_KEY, nextIndex]]);
-    state.index = nextIndex;
-    updateBackupReminder();
+    if (canUseSavePicker()) {
+      const result = await saveTextWithPicker(pending.text, pending.fileName, 'Copia cifrada de PWM');
+      if (result.saved) {
+        await completeBackupExport(pending);
+        return true;
+      }
+      if (result.cancelled) {
+        showNotice('No se guard\u00f3 la copia. El respaldo sigue pendiente.', 'error');
+        return false;
+      }
+    }
 
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${safeFileName(state.vaultName)}-boveda-v${backupVersion}.pwm.json`;
-    link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    showNotice(`Copia cifrada v${backupVersion} de “${state.vaultName}” descargada.`);
-    resetAutoLock();
-  } catch (_) {
-    showNotice('No pude preparar la copia cifrada.', 'error');
+    triggerTextDownload(pending.text, pending.fileName);
+    state.pendingBackupExport = pending;
+    openBackupVerificationDialog();
+    showNotice('Eleg\u00ed la copia descargada para comprobarla antes de marcar el respaldo como realizado.');
+    return false;
+  } catch (error) {
+    showNotice(error.message || 'No pude preparar la copia cifrada.', 'error');
+    return false;
   } finally {
     button.disabled = false;
   }
@@ -1727,17 +2493,18 @@ async function vaultIdentityFingerprint(record) {
   return base64FromBytes(new Uint8Array(digest));
 }
 
-async function duplicateVaultReason(backup, vaultName) {
-  if (vaultNameExists(vaultName)) {
+async function duplicateVaultReason(backup, vaultName, index = state.index, access = null) {
+  if (vaultNameExistsInIndex(index, vaultName)) {
     return `Ya existe una bóveda llamada “${vaultName}”.`;
   }
-  if (backup.uid && state.index.vaults.some((vault) => vault.uid === backup.uid)) {
+  if (backup.uid && index.vaults.some((vault) => vault.uid === backup.uid)) {
     return 'Esa bóveda ya está guardada en este navegador.';
   }
 
   const importedFingerprint = await vaultIdentityFingerprint(backup.record);
-  for (const metadata of state.index.vaults) {
+  for (const metadata of index.vaults) {
     const record = await readValue(vaultRecordKey(metadata.id));
+    if (access) assertVaultAccess(access);
     if (
       validateVaultRecord(record)
       && await vaultIdentityFingerprint(record) === importedFingerprint
@@ -1753,6 +2520,11 @@ async function importBackup(event) {
   event.target.value = '';
   if (!file) return;
 
+  if (file.size > BACKUP_MAX_BYTES) {
+    showNotice('La copia cifrada supera el límite de 50 MiB y no se importó.', 'error');
+    return;
+  }
+
   try {
     const parsed = JSON.parse(await file.text());
     if (parsed?.format === USB_KEY_FORMAT) {
@@ -1761,55 +2533,56 @@ async function importBackup(event) {
     }
     const backup = extractBackup(parsed, file.name);
     const vaultName = cleanImportedVaultName(backup.name);
-    const duplicateReason = await duplicateVaultReason(backup, vaultName);
-    if (duplicateReason) {
-      showNotice(duplicateReason, 'error');
-      return;
-    }
+    await withTemporaryVaultAccess(async (access) => {
+      const currentIndex = await readVaultIndexWithAccess(access, true);
+      const duplicateReason = await duplicateVaultReason(backup, vaultName, currentIndex, access);
+      if (duplicateReason) throw new Error(duplicateReason);
 
-    const vaultId = crypto.randomUUID();
-    const createdAt = backup.record.createdAt || new Date().toISOString();
-    const metadata = {
-      id: vaultId,
-      uid: backup.uid || crypto.randomUUID(),
-      name: vaultName,
-      backupVersion: backup.backupVersion,
-      usbKeyVersion: backup.usbKeyVersion,
-      backupReason: null,
-      needsBackup: false,
-      createdAt,
-      updatedAt: backup.record.updatedAt || createdAt,
-    };
-    const keepCurrentVault = Boolean(state.key && state.vaultId);
-    const nextIndex = {
-      ...state.index,
-      activeVaultId: keepCurrentVault ? state.index.activeVaultId : vaultId,
-      vaults: [...state.index.vaults, metadata],
-    };
-    await writeValues([
-      [vaultRecordKey(vaultId), backup.record],
-      [INDEX_KEY, nextIndex],
-    ]);
-    state.index = nextIndex;
-    renderVaultSelect(vaultId);
-    if (!keepCurrentVault) {
-      state.index.activeVaultId = vaultId;
-      setScreen('unlock');
-    }
+      const vaultId = crypto.randomUUID();
+      const createdAt = backup.record.createdAt || new Date().toISOString();
+      const metadata = {
+        id: vaultId,
+        uid: backup.uid || crypto.randomUUID(),
+        name: vaultName,
+        backupVersion: backup.backupVersion,
+        usbKeyVersion: backup.usbKeyVersion,
+        backupReason: null,
+        needsBackup: false,
+        createdAt,
+        updatedAt: backup.record.updatedAt || createdAt,
+      };
+      const keepCurrentVault = Boolean(state.key && state.vaultId);
+      const nextIndex = {
+        ...currentIndex,
+        activeVaultId: keepCurrentVault ? currentIndex.activeVaultId : vaultId,
+        vaults: [...currentIndex.vaults, metadata],
+      };
+      await writeValues([
+        [vaultRecordKey(vaultId), backup.record],
+        [INDEX_KEY, nextIndex],
+      ], access);
+      assertVaultAccess(access);
+      state.index = nextIndex;
+      renderVaultSelect(vaultId);
+      if (!keepCurrentVault) {
+        state.index.activeVaultId = vaultId;
+        setScreen('unlock');
+      }
+    });
     showNotice(`“${vaultName}” se importó como una bóveda nueva.`);
-  } catch (_) {
-    showNotice('No pude leer esa copia cifrada.', 'error');
+  } catch (error) {
+    const duplicateMessages = [
+      `Ya existe una bóveda llamada “${vaultName}”.`,
+      'Esa bóveda ya está guardada en este navegador.',
+      'Esa copia cifrada ya fue importada.',
+    ];
+    showNotice(
+      duplicateMessages.includes(error.message)
+        ? error.message
+        : 'No pude leer esa copia cifrada.',
+      'error',
+    );
   }
-}
-
-function downloadJson(value, fileName) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function verifyCurrentMaster(masterPassword) {
@@ -1822,6 +2595,9 @@ async function verifyCurrentMaster(masterPassword) {
 }
 
 async function persistCurrentRecord(nextRecord, metadataUpdates = {}, historyEvent = null) {
+  const access = captureVaultAccess();
+  assertVaultAccess(access, true);
+  const expectedSnapshot = vaultRecordSnapshot(state.record);
   const nextHistory = historyEvent
     ? historyWithEvent(state.history, historyEvent)
     : state.history;
@@ -1832,30 +2608,208 @@ async function persistCurrentRecord(nextRecord, metadataUpdates = {}, historyEve
   });
   const updatedAt = new Date().toISOString();
   const record = { ...nextRecord, ...encrypted, updatedAt };
-  const nextIndex = updateVaultMetadata(
-    state.index,
+  const updates = {
+    ...metadataUpdates,
+    backupReason: metadataUpdates.backupReason || 'usb',
+    needsBackup: true,
+  };
+  const committed = await commitVaultSnapshot(
+    access,
     state.vaultId,
-    state.vaultName,
-    updatedAt,
-    {
-      ...metadataUpdates,
-      backupReason: metadataUpdates.backupReason || 'usb',
-      needsBackup: true,
-    },
+    expectedSnapshot,
+    (metadata) => !Number.isSafeInteger(updates.usbKeyVersion)
+      || metadata.usbKeyVersion === updates.usbKeyVersion - 1,
+    (index) => ({
+      record,
+      index: updateVaultMetadata(index, state.vaultId, state.vaultName, updatedAt, updates),
+    }),
   );
-  await writeValues([
-    [vaultRecordKey(state.vaultId), record],
-    [INDEX_KEY, nextIndex],
-  ]);
+  assertVaultAccess(access, true);
   state.record = record;
   state.history = nextHistory;
-  state.index = nextIndex;
+  state.index = committed.index;
   renderVaultSelect(state.vaultId);
+}
+
+function clearPendingUsbKey() {
+  const pending = state.pendingUsbKey;
+  if (pending?.secret) pending.secret.fill(0);
+  if (pending) pending.text = '';
+  state.pendingUsbKey = null;
+}
+
+function setUsbKeyBusy(busy) {
+  state.usbKeyBusy = busy;
+  ['cancelUsbKey', 'cancelPendingUsbKeyButton', 'disableUsbKeyButton', 'savePendingUsbKeyButton', 'verifyPendingUsbKeyButton']
+    .forEach((id) => { $(id).disabled = busy; });
+  $('usbKeyDialog').toggleAttribute('data-busy', busy);
+}
+
+function usbKeyStillActiveMessage() {
+  return validUsbUnlock(state.record?.usbUnlock)
+    ? 'La llave anterior sigue funcionando.'
+    : 'La llave nueva todavía no está activa.';
+}
+
+function setUsbKeySetupStep() {
+  $('usbKeySetupStep').classList.remove('hidden');
+  $('usbKeyFileStep').classList.add('hidden');
+  $('usbKeyFileText').textContent = '';
+  $('usbKeyFileName').textContent = '';
+  $('usbKeyFileStatus').textContent = '';
+  $('verifyPendingUsbKeyButton').classList.add('hidden');
+  $('savePendingUsbKeyButton').classList.remove('hidden');
+}
+
+function renderPendingUsbKeyStep() {
+  const pending = state.pendingUsbKey;
+  if (!pending) return;
+  $('usbKeySetupStep').classList.add('hidden');
+  $('usbKeyFileStep').classList.remove('hidden');
+  $('usbKeyFileName').textContent = pending.fileName;
+  const verifyButton = $('verifyPendingUsbKeyButton');
+  const saveButton = $('savePendingUsbKeyButton');
+  const previousKeyMessage = validUsbUnlock(state.record?.usbUnlock)
+    ? 'Hasta activarla, la llave anterior sigue funcionando.'
+    : 'La llave nueva todavía no está activa.';
+
+  if (pending.fileVerified) {
+    $('usbKeyFileTitle').textContent = 'Archivo comprobado';
+    $('usbKeyFileText').textContent = 'El archivo coincide con la llave nueva. Activala para que esta bóveda pueda usarlo.';
+    $('usbKeyFileStatus').textContent = previousKeyMessage;
+    verifyButton.classList.add('hidden');
+    saveButton.classList.remove('hidden');
+    saveButton.textContent = 'Activar llave comprobada';
+    return;
+  }
+
+  if (pending.downloadStarted) {
+    $('usbKeyFileTitle').textContent = 'Comprobá el archivo descargado';
+    $('usbKeyFileText').textContent = 'El navegador inició la descarga. Elegí ese mismo archivo para comprobarlo y activar la llave nueva.';
+    $('usbKeyFileStatus').textContent = previousKeyMessage;
+    verifyButton.classList.remove('hidden');
+    saveButton.classList.add('hidden');
+    return;
+  }
+
+  $('usbKeyFileTitle').textContent = 'Guardá y activá la llave';
+  $('usbKeyFileText').textContent = 'Elegí dónde guardar el archivo. La llave nueva se activará solo después de que el navegador la guarde y la compruebe.';
+  $('usbKeyFileStatus').textContent = previousKeyMessage;
+  verifyButton.classList.add('hidden');
+  saveButton.classList.remove('hidden');
+  saveButton.textContent = 'Guardar y activar llave';
+}
+
+async function pendingUsbKeyStillMatches(pending) {
+  if (
+    !pending
+    || !state.key
+    || !state.record
+    || state.vaultId !== pending.vaultId
+    || vaultRecordSnapshot(state.record) !== pending.recordSnapshot
+  ) return false;
+
+  const storedIndex = await readValue(INDEX_KEY);
+  const storedRecord = await readValue(vaultRecordKey(pending.vaultId));
+  if (!validateVaultIndex(storedIndex) || !validateVaultRecord(storedRecord)) return false;
+  const metadata = storedIndex.vaults.find((vault) => vault.id === pending.vaultId);
+  return Boolean(
+    metadata
+    && metadata.usbKeyVersion === pending.previousUsbKeyVersion
+    && vaultRecordSnapshot(storedRecord) === pending.recordSnapshot,
+  );
+}
+
+async function activatePendingUsbKey() {
+  const pending = state.pendingUsbKey;
+  if (!pending?.fileVerified) return;
+  const access = captureVaultAccess();
+  assertVaultAccess(access, true);
+  if (!await pendingUsbKeyStillMatches(pending)) {
+    throw new Error('La bóveda cambió antes de activar la llave. La llave nueva no se activó.');
+  }
+  await persistCurrentRecord(
+    { ...state.record, usbUnlock: pending.usbUnlock },
+    { usbKeyVersion: pending.usbKeyVersion, backupReason: 'usb' },
+    createHistoryEvent('usb-key-created', `v${pending.usbKeyVersion}`),
+  );
+  const version = pending.usbKeyVersion;
+  clearPendingUsbKey();
+  closeUsbKeyDialog(false, true);
+  showNotice(`Llave v${version} activada. Es necesario exportar la bóveda a tu USB ahora: sin una copia nueva, esta llave no abrirá tus respaldos.`);
+}
+
+function beginUsbKeyDownloadVerification(pending) {
+  triggerTextDownload(pending.text, pending.fileName);
+  pending.downloadStarted = true;
+  renderPendingUsbKeyStep();
+  showNotice('Elegí el archivo descargado para comprobarlo antes de activar la llave nueva.');
+}
+
+async function savePendingUsbKey() {
+  const pending = state.pendingUsbKey;
+  if (!pending) return;
+  const saveButton = $('savePendingUsbKeyButton');
+  setUsbKeyBusy(true);
+  try {
+    if (pending.fileVerified) {
+      await activatePendingUsbKey();
+      return;
+    }
+    if (canUseSavePicker()) {
+      const result = await saveTextWithPicker(pending.text, pending.fileName, 'Llave USB de PWM');
+      if (result.saved) {
+        pending.fileVerified = true;
+        renderPendingUsbKeyStep();
+        await activatePendingUsbKey();
+        return;
+      }
+      if (result.cancelled) {
+        showNotice(`No se guardó la llave. ${usbKeyStillActiveMessage()}`, 'error');
+        return;
+      }
+    }
+    beginUsbKeyDownloadVerification(pending);
+  } catch (error) {
+    renderPendingUsbKeyStep();
+    showNotice(
+      error.message || `El archivo se guardó, pero no se activó. ${usbKeyStillActiveMessage()}`,
+      'error',
+    );
+  } finally {
+    setUsbKeyBusy(false);
+  }
+}
+
+async function verifyPendingUsbKeyFile(event) {
+  const [file] = event.target.files;
+  event.target.value = '';
+  const pending = state.pendingUsbKey;
+  if (!file || !pending) return;
+  let usbKey;
+  setUsbKeyBusy(true);
+  try {
+    usbKey = await readUsbKeyFile(file);
+    if (usbKey.keyId !== pending.keyId || !equalBytes(usbKey.secret, pending.secret)) {
+      throw new Error('El archivo elegido no coincide con la llave nueva.');
+    }
+    pending.fileVerified = true;
+    renderPendingUsbKeyStep();
+    await activatePendingUsbKey();
+  } catch (error) {
+    renderPendingUsbKeyStep();
+    showNotice(error.message || 'No pude comprobar el archivo llave.', 'error');
+  } finally {
+    usbKey?.secret.fill(0);
+    setUsbKeyBusy(false);
+  }
 }
 
 function openUsbKeyDialog() {
   if (!state.record || state.record.version !== 2) return;
+  clearPendingUsbKey();
   $('usbKeyForm').reset();
+  setUsbKeySetupStep();
   const configured = validUsbUnlock(state.record.usbUnlock);
   $('usbKeyStatus').textContent = configured
     ? 'Hay un archivo llave activo. Crear otro dejará de aceptar el anterior.'
@@ -1866,21 +2820,42 @@ function openUsbKeyDialog() {
   resetAutoLock();
 }
 
-function closeUsbKeyDialog() {
+function closeUsbKeyDialog(discardPending = true, silent = false) {
+  if (state.usbKeyBusy) return;
+  const hadPending = Boolean(state.pendingUsbKey);
+  const hadPreviousKey = validUsbUnlock(state.record?.usbUnlock);
+  if (discardPending) clearPendingUsbKey();
   $('usbKeyForm').reset();
+  $('usbKeyVerificationInput').value = '';
+  setUsbKeySetupStep();
   if ($('usbKeyDialog').open) $('usbKeyDialog').close();
+  setUsbKeyBusy(false);
   resetAutoLock();
+  if (hadPending && !silent) {
+    showNotice(
+      hadPreviousKey
+        ? 'La llave nueva no se activó. La llave anterior sigue funcionando.'
+        : 'La llave nueva no se activó.',
+      'error',
+    );
+  }
 }
 
 async function createOrReplaceUsbKey(event) {
   event.preventDefault();
+  if (state.usbKeyBusy) return;
+  let access;
   const master = $('usbMaster').value;
-  if (!master) return showNotice('Ingresá tu clave maestra para crear el archivo llave.', 'error');
+  $('usbMaster').value = '';
+  if (!master) return showNotice('Ingresá tu clave maestra para preparar el archivo llave.', 'error');
   let secret;
+  setUsbKeyBusy(true);
   try {
+    access = captureVaultAccess();
     await verifyCurrentMaster(master);
+    assertVaultAccess(access, true);
     const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
-    if (!metadata) throw new Error('Bóveda no encontrada');
+    if (!metadata || !state.record) throw new Error('Bóveda no encontrada');
     const usbKeyVersion = metadata.usbKeyVersion + 1;
     const keyId = crypto.randomUUID();
     secret = randomDek();
@@ -1889,26 +2864,40 @@ async function createOrReplaceUsbKey(event) {
       keyId,
       ...(await wrapDek(secretKey, state.keyBytes, aad('usb-wrap', keyId))),
     };
-    await persistCurrentRecord(
-      { ...state.record, usbUnlock },
-      { usbKeyVersion, backupReason: 'usb' },
-      createHistoryEvent('usb-key-created', `v${usbKeyVersion}`),
-    );
-    downloadJson(
-      { format: USB_KEY_FORMAT, version: USB_KEY_VERSION, keyId, secret: base64FromBytes(secret) },
-      `${safeFileName(state.vaultName)}-llave-v${usbKeyVersion}.json`,
-    );
-    closeUsbKeyDialog();
-    showNotice(`Llave v${usbKeyVersion} creada. Es necesario exportar la bóveda a tu USB ahora: sin una copia nueva, esta llave no abrirá tus respaldos.`);
+    assertVaultAccess(access, true);
+    clearPendingUsbKey();
+    state.pendingUsbKey = {
+      vaultId: state.vaultId,
+      previousUsbKeyVersion: metadata.usbKeyVersion,
+      usbKeyVersion,
+      keyId,
+      secret,
+      usbUnlock,
+      recordSnapshot: vaultRecordSnapshot(state.record),
+      text: JSON.stringify(
+        { format: USB_KEY_FORMAT, version: USB_KEY_VERSION, keyId, secret: base64FromBytes(secret) },
+        null,
+        2,
+      ),
+      fileName: `${safeFileName(state.vaultName)}-llave-v${usbKeyVersion}.json`,
+      fileVerified: false,
+      downloadStarted: false,
+    };
+    secret = null;
+    renderPendingUsbKeyStep();
+    showNotice('La llave nueva está lista, pero todavía no está activa. Guardala y comprobala para activarla.');
   } catch (_) {
-    showNotice('La clave maestra no es correcta o no pude crear el archivo llave.', 'error');
+    showNotice('La clave maestra no es correcta o no pude preparar el archivo llave.', 'error');
   } finally {
+    $('usbMaster').value = '';
     secret?.fill(0);
+    setUsbKeyBusy(false);
   }
 }
 
 async function disableUsbKey() {
   const master = $('usbMaster').value;
+  $('usbMaster').value = '';
   if (!master) return showNotice('Ingresá tu clave maestra para desactivar el archivo llave.', 'error');
   try {
     await verifyCurrentMaster(master);
@@ -1921,6 +2910,8 @@ async function disableUsbKey() {
     showNotice('Llave USB desactivada. Exportá la bóveda a tu USB ahora para que el respaldo refleje este cambio.');
   } catch (_) {
     showNotice('La clave maestra no es correcta o no pude desactivar el archivo llave.', 'error');
+  } finally {
+    $('usbMaster').value = '';
   }
 }
 
@@ -1953,18 +2944,25 @@ async function deleteCurrentVault(event) {
 
   const deletedVaultId = state.vaultId;
   const deletedVaultName = state.vaultName;
-  const remainingVaults = state.index.vaults.filter((vault) => vault.id !== deletedVaultId);
-  const nextIndex = {
-    ...state.index,
-    activeVaultId: remainingVaults[0]?.id ?? null,
-    vaults: remainingVaults,
-  };
 
   try {
+    const access = captureVaultAccess();
+    const currentIndex = await readVaultIndexWithAccess(access);
+    const remainingVaults = currentIndex.vaults.filter((vault) => vault.id !== deletedVaultId);
+    if (remainingVaults.length === currentIndex.vaults.length) {
+      throw new Error('La bóveda ya no existe en este navegador.');
+    }
+    const nextIndex = {
+      ...currentIndex,
+      activeVaultId: remainingVaults[0]?.id ?? null,
+      vaults: remainingVaults,
+    };
     await writeAndDeleteValues(
       [[INDEX_KEY, nextIndex]],
       [vaultRecordKey(deletedVaultId)],
+      access,
     );
+    assertVaultAccess(access, true);
     state.index = nextIndex;
     closeDeleteVaultDialog();
     lockVault();
@@ -2007,7 +3005,10 @@ async function changeMasterPassword(event) {
   }
 
   try {
+    const access = captureVaultAccess();
+    const expectedSnapshot = vaultRecordSnapshot(state.record);
     await verifyCurrentMaster(currentMaster);
+    assertVaultAccess(access, true);
     const salt = newSalt();
     const newPasswordKey = await deriveKey(newMaster, salt, PBKDF2_ITERATIONS);
     const passwordWrap = await wrapDek(newPasswordKey, state.keyBytes, aad('password-wrap'));
@@ -2029,20 +3030,26 @@ async function changeMasterPassword(event) {
       ...encrypted,
       updatedAt,
     };
-    const nextIndex = updateVaultMetadata(
-      state.index,
+    const committed = await commitVaultSnapshot(
+      access,
       state.vaultId,
-      state.vaultName,
-      updatedAt,
-      { needsBackup: true, backupReason: 'master' },
+      expectedSnapshot,
+      () => true,
+      (index) => ({
+        record: nextRecord,
+        index: updateVaultMetadata(
+          index,
+          state.vaultId,
+          state.vaultName,
+          updatedAt,
+          { needsBackup: true, backupReason: 'master' },
+        ),
+      }),
     );
-    await writeValues([
-      [vaultRecordKey(state.vaultId), nextRecord],
-      [INDEX_KEY, nextIndex],
-    ]);
+    assertVaultAccess(access, true);
     state.record = nextRecord;
     state.history = nextHistory;
-    state.index = nextIndex;
+    state.index = committed.index;
     updateBackupReminder();
     closeMasterChange();
     showNotice('Clave maestra actualizada. Es necesario exportar la bóveda a tu USB ahora: las copias previas sólo abrirán con la clave anterior.');
@@ -2152,6 +3159,9 @@ async function start() {
   });
   $('newVaultButton').addEventListener('click', () => showSetup(true));
   $('cancelSetupButton').addEventListener('click', () => {
+    $('setupForm').reset();
+    $('setupMaster').value = '';
+    $('setupConfirm').value = '';
     renderVaultSelect();
     setScreen('unlock');
   });
@@ -2216,7 +3226,11 @@ async function start() {
 
   $('usbKeyButton').addEventListener('click', openUsbKeyDialog);
   $('cancelUsbKey').addEventListener('click', closeUsbKeyDialog);
+  $('cancelPendingUsbKeyButton').addEventListener('click', closeUsbKeyDialog);
   $('disableUsbKeyButton').addEventListener('click', disableUsbKey);
+  $('savePendingUsbKeyButton').addEventListener('click', savePendingUsbKey);
+  $('verifyPendingUsbKeyButton').addEventListener('click', () => $('usbKeyVerificationInput').click());
+  $('usbKeyVerificationInput').addEventListener('change', verifyPendingUsbKeyFile);
   $('usbKeyDialog').addEventListener('cancel', (event) => {
     event.preventDefault();
     closeUsbKeyDialog();
@@ -2237,13 +3251,23 @@ async function start() {
     event.preventDefault();
     closePendingBackupDialog();
   });
+  $('selectBackupVerificationButton').addEventListener('click', () => $('backupVerificationInput').click());
+  $('backupVerificationInput').addEventListener('change', verifyPendingBackupFile);
+  $('cancelBackupVerificationButton').addEventListener('click', cancelBackupVerification);
+  $('backupVerificationDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    cancelBackupVerification();
+  });
 
   $('exportButton').addEventListener('click', downloadBackup);
+  $('dismissBackupReminder').addEventListener('click', dismissBackupReminder);
   $('importButton').addEventListener('click', () => $('importInput').click());
   $('showImportFromLock').addEventListener('click', () => $('importInput').click());
   $('showImportFromSetup').addEventListener('click', () => $('importInput').click());
   $('importInput').addEventListener('change', importBackup);
-  window.addEventListener('pagehide', clearLeaveBackupReminder);
+  window.addEventListener('pagehide', lockVaultOnPageExit);
+  window.addEventListener('pageshow', lockRestoredVault);
+  window.addEventListener('storage', handleVaultLeaseStorage);
   ['click', 'keydown', 'touchstart'].forEach(
     (eventName) => document.addEventListener(eventName, resetAutoLock),
   );

@@ -9,13 +9,15 @@ Una bóveda de contraseñas que funciona sin cuenta ni servidor. Los datos queda
 3. Guardá o generá una contraseña por cada servicio.
 4. Descargá una copia cifrada desde **Exportar** y guardala en un lugar seguro. Los archivos se numeran por bóveda, por ejemplo `personal-boveda-v1.pwm.json`, `personal-boveda-v2.pwm.json`, etc.
 
-Cuando agregás, modificás o eliminás una contraseña, PWM muestra un aviso urgente y resalta **Exportar** hasta que descargues una nueva versión para tu USB. Es necesario hacerlo: si perdés el navegador o el dispositivo antes, las copias anteriores no tendrán las credenciales recientes. Al cambiar la clave maestra, las copias previas sólo abrirán con la clave anterior; exportá una nueva inmediatamente.
+Cuando agregás, modificás o eliminás una contraseña, PWM muestra un aviso urgente y resalta **Exportar** hasta que guardes una nueva versión para tu USB. Es necesario hacerlo: si perdés el navegador o el dispositivo antes, las copias anteriores no tendrán las credenciales recientes. Al cambiar la clave maestra, las copias previas sólo abrirán con la clave anterior; exportá una nueva inmediatamente.
+
+PWM no marca una copia como realizada sólo por haber iniciado una descarga. Si el navegador permite elegir el destino, espera a que el archivo termine de escribirse y lo comprueba. En navegadores que sólo ofrecen descargas, PWM mantiene el aviso pendiente y pide seleccionar de nuevo la copia recién guardada antes de confirmarla. Si no podés comprobarla, el estado seguro es que el respaldo sigue pendiente.
 
 Si intentás cerrar, recargar o salir del sitio con una copia pendiente, el navegador mostrará su confirmación nativa de cambios sin guardar. Dentro de PWM, bloquear, volver al inicio o borrar una bóveda también ofrecen exportar antes de continuar. Estos avisos son una última barrera: el navegador puede permitir que sigas sin copia y no reemplazan el respaldo.
 
 ### Archivo llave en pendrive (opcional)
 
-Desde una bóveda abierta, elegí **Archivo llave USB** e ingresá la clave maestra actual. Se descargará un pequeño archivo JSON numerado, por ejemplo `personal-llave-v1.json`, `personal-llave-v2.json`, etc., para guardar en tu pendrive. Luego, en la pantalla bloqueada, elegí **Importar llave**: PWM encontrará y abrirá automáticamente la bóveda vinculada con ese archivo.
+Desde una bóveda abierta, elegí **Archivo llave USB** e ingresá la clave maestra actual. PWM prepara un pequeño archivo JSON numerado, por ejemplo `personal-llave-v1.json`, `personal-llave-v2.json`, etc., para guardar en tu pendrive. La llave nueva no se activa todavía: primero debe guardarse y comprobarse. Si cancelás, se bloquea la página o falla la escritura, la llave anterior sigue activa y la nueva no sirve. Luego, en la pantalla bloqueada, elegí **Importar llave**: PWM encontrará y abrirá automáticamente la bóveda vinculada con ese archivo.
 
 La clave maestra sigue siendo el método de respaldo y también se pide para crear, reemplazar o desactivar un archivo llave. **No guardes el archivo llave junto con una copia cifrada de la bóveda:** quien tenga ambos podrá abrirla. El archivo llave no contiene la clave maestra, pero funciona como una llave de posesión y se puede copiar.
 
@@ -45,11 +47,15 @@ Las pantallas de inicio y desbloqueo usan fondos neutros locales que rotan aprox
 - La DEK se envuelve con una clave derivada de la clave maestra mediante PBKDF2-HMAC-SHA-256 y 600.000 iteraciones. La clave maestra no se guarda.
 - Opcionalmente, la misma DEK puede envolverse con el secreto aleatorio de un archivo llave. Los contextos de cifrado separan contenido, clave maestra y archivo llave.
 - La bóveda se bloquea tras quince minutos sin actividad y al pulsar **Bloquear**.
+- La bóveda también se bloquea al abandonar la página y si el navegador intenta restaurarla desde su caché de navegación.
+- Una misma bóveda no puede quedar abierta en dos pestañas a la vez: PWM reserva la sesión de edición y rechaza el segundo desbloqueo para evitar escrituras en conflicto.
 - Las contraseñas generadas usan `crypto.getRandomValues`.
 - La clave maestra puede cambiarse desde una bóveda desbloqueada.
 - Las copias exportadas permanecen cifradas y conservan el nombre de la bóveda.
 - La apariencia elegida de cada bóveda se cifra con el resto de su contenido y se incluye en las exportaciones.
 - Cada bóveda tiene un identificador persistente para impedir que una misma exportación se importe varias veces.
+- Las importaciones de copias cifradas se limitan a 50 MiB antes de leerlas en memoria.
+- La página usa una política CSP restrictiva: no carga scripts, estilos, imágenes ni conexiones de terceros (`connect-src 'none'`).
 
 ## Límites importantes
 
@@ -58,3 +64,5 @@ Este es un proyecto personal y no reemplaza a un gestor de contraseñas auditado
 Los nombres de las bóvedas quedan visibles localmente para poder elegir una antes de desbloquearla; su contenido permanece cifrado. Al cambiar una clave maestra, las copias exportadas anteriormente siguen necesitando la clave anterior, aunque también podrán abrirse con el archivo llave que estuviera activo cuando se exportaron.
 
 Las bóvedas creadas con versiones anteriores se actualizan al nuevo formato la primera vez que se desbloquean correctamente con su clave maestra. Las copias cifradas y el archivo llave pueden importarse o seleccionarse en otro navegador: el archivo llave se vincula al contenido cifrado, no al identificador local de esa instalación. Reemplazar un archivo llave afecta a la bóveda actual y a las futuras exportaciones; no modifica las copias descargadas anteriormente.
+
+La posibilidad de elegir directamente la carpeta de guardado depende del navegador. Cuando no está disponible, PWM no puede saber si una descarga llegó al disco; por eso exige seleccionar otra vez el archivo descargado para comprobarlo. Ejecutá PWM en un origen HTTPS dedicado, sin analíticas, extensiones o scripts de terceros. Ninguna aplicación web puede proteger una bóveda ya abierta frente a código malicioso que se ejecute con el mismo origen.

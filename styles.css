@@ -142,10 +142,13 @@ textarea { resize: vertical; }
 .backup-reminder { display: flex; align-items: center; gap: .75rem; margin: -.25rem 0 1rem; border: 1px solid #f0c36a; border-radius: .75rem; padding: .75rem .9rem; background: #fffbeb; color: #78350f; font-size: .84rem; }
 .backup-reminder-icon { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; place-items: center; border-radius: 999px; background: #f59e0b; color: #fff; line-height: 0; }
 .backup-reminder-icon svg { width: 1.18rem; height: 1.18rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.backup-reminder-copy { min-width: 0; }
+.backup-reminder-copy { min-width: 0; flex: 1; }
 .backup-reminder-copy > strong, .backup-reminder-text > span, .backup-reminder-critical { display: block; }
 .backup-reminder-text > span { margin-top: .12rem; color: #92400e; line-height: 1.4; }
 .backup-reminder-critical { margin-top: .48rem; padding-top: .48rem; border-top: 1px solid #f0c36a; color: #78350f; font-size: .86rem; font-weight: 850; line-height: 1.35; }
+.backup-reminder-close { display: grid; flex: 0 0 auto; width: 2rem; height: 2rem; place-items: center; border: 0; border-radius: .45rem; background: transparent; color: inherit; opacity: .68; }
+.backup-reminder-close:hover { background: #f59e0b20; opacity: 1; }
+.backup-reminder-close svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 @keyframes backup-export-pulse {
   0%, 100% { box-shadow: 0 0 0 3px #f59e0b30; filter: brightness(1); }
   50% { box-shadow: 0 0 0 5px #f59e0b55, 0 0 .9rem #f59e0b55; filter: brightness(1.06); }
@@ -193,6 +196,27 @@ textarea { resize: vertical; }
 .modal::backdrop { background: #11182780; }
 .modal h2 { margin: .2rem 0 .6rem; letter-spacing: -.03em; }
 .modal-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: .2rem; }
+.usb-key-dialog { width: min(33rem, calc(100% - 2rem)); }
+.usb-key-heading h2 { margin-bottom: 0; }
+.usb-key-status-card { display: grid; grid-template-columns: 2.4rem minmax(0, 1fr); align-items: center; gap: .7rem; border: 1px solid #c7d7f6; border-radius: .72rem; background: #f4f8ff; padding: .72rem .8rem; }
+.usb-key-status-icon, .usb-key-warning-icon { display: grid; place-items: center; width: 2.2rem; height: 2.2rem; border-radius: 999px; }
+.usb-key-status-icon { background: #dbeafe; color: #1d4ed8; }
+.usb-key-status-icon svg, .usb-key-warning-icon svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.usb-key-status-label { margin: 0 0 .16rem; color: #315fc3; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+#usbKeyStatus { margin: 0; color: #1d365d; font-size: .84rem; font-weight: 700; line-height: 1.42; }
+.usb-key-warning { display: grid; grid-template-columns: 2.2rem minmax(0, 1fr); gap: .7rem; border: 1px solid #efc66b; border-radius: .72rem; background: #fffaf0; color: #6d4310; padding: .82rem; }
+.usb-key-warning-icon { background: #fff0c9; color: #ad6800; }
+.usb-key-warning strong { display: block; color: #703f08; font-size: .88rem; }
+.usb-key-warning p { margin: .34rem 0 0; color: #76511d; font-size: .79rem; line-height: 1.46; }
+.usb-key-warning p + p { margin-top: .38rem; }
+.usb-key-warning b { color: #643807; }
+.usb-key-file-card, .backup-verification-file { display: flex; align-items: center; gap: .65rem; min-width: 0; border: 1px solid #c7d7f6; border-radius: .72rem; background: #f4f8ff; color: #1d365d; padding: .72rem .8rem; }
+.usb-key-file-card strong, .backup-verification-file strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .84rem; }
+.usb-key-dialog .modal-actions { flex-wrap: wrap; }
+.usb-key-dialog .modal-actions .button { flex: 1 1 9rem; }
+#usbKeyFileStatus { min-height: 1.15rem; margin-top: -.35rem; }
+#usbKeyFileStep .modal-actions { flex-wrap: wrap; }
+#usbKeyFileStep .modal-actions .button { flex: 1 1 11rem; }
 .appearance-modal { width: min(44rem, calc(100% - 1rem)); max-height: min(88vh, 48rem); overflow-y: auto; }
 .appearance-options { display: grid; gap: 1rem; }
 .appearance-group { display: grid; gap: .5rem; }
@@ -240,6 +264,7 @@ textarea { resize: vertical; }
 :root[data-theme="dark"] .backup-reminder { border-color: #75541e; background: #2d2414; color: #ffe1a8; }
 :root[data-theme="dark"] .backup-reminder-text > span { color: #e7bd70; }
 :root[data-theme="dark"] .backup-reminder-critical { border-color: #75541e; color: #ffe1a8; }
+:root[data-theme="dark"] .backup-reminder-close:hover { background: #d99a2b28; }
 :root[data-theme="dark"] .optional-toggle { color: #8db7ff; }
 :root[data-theme="dark"] .optional-toggle:hover { color: #b7d1ff; }
 :root[data-theme="dark"] .notice { border-color: #29784b; background: #13271b; color: #beefcb; }
@@ -252,6 +277,15 @@ textarea { resize: vertical; }
 :root[data-theme="dark"] .appearance-option { border-color: #3b4451; background: #11161d; color: #d4dae3; }
 :root[data-theme="dark"] .appearance-option:hover { border-color: #5b6879; background: #272e38; }
 :root[data-theme="dark"] .appearance-option.selected { border-color: #5b8def; background: #192a47; color: #b8d0ff; }
+:root[data-theme="dark"] .usb-key-status-card { border-color: #294b7d; background: #142640; }
+:root[data-theme="dark"] .usb-key-status-icon { background: #1f3f6f; color: #9bc4ff; }
+:root[data-theme="dark"] .usb-key-status-label { color: #9bc4ff; }
+:root[data-theme="dark"] #usbKeyStatus { color: #dbeafe; }
+:root[data-theme="dark"] .usb-key-warning { border-color: #75541e; background: #2d2414; color: #ffe1a8; }
+:root[data-theme="dark"] .usb-key-warning-icon { background: #4a3510; color: #ffd278; }
+:root[data-theme="dark"] .usb-key-warning strong, :root[data-theme="dark"] .usb-key-warning b { color: #ffe1a8; }
+:root[data-theme="dark"] .usb-key-warning p { color: #ebc97d; }
+:root[data-theme="dark"] .usb-key-file-card, :root[data-theme="dark"] .backup-verification-file { border-color: #294b7d; background: #142640; color: #dbeafe; }
 
 @media (prefers-reduced-motion: reduce) {
   #exportButton.backup-due { animation: none; }
