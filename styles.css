@@ -17,7 +17,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .button-icon { width: 1rem; height: 1rem; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 .app-shell { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; padding: 1rem 0 3rem; }
-.app-header, .vault-toolbar, .panel-heading, .toolbar-actions, .entry-actions, .generator-row, .brand, .status-pill, .header-actions { display: flex; align-items: center; }
+.app-header, .vault-toolbar, .panel-heading, .toolbar-actions, .entry-actions, .generator-row, .brand, .header-actions { display: flex; align-items: center; }
 .app-header { justify-content: space-between; gap: 1rem; padding: .35rem 0 1.6rem; border-bottom: 1px solid #e1e4e8; }
 .brand { gap: .65rem; color: inherit; text-decoration: none; }
 .brand-mark { display: grid; width: 2.35rem; height: 2.35rem; place-items: center; border-radius: .65rem; background: #1d4ed8; color: #fff; font-size: 1.45rem; font-weight: 700; }
@@ -25,11 +25,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brand strong { font-size: .98rem; letter-spacing: -.01em; }
 .brand small { margin-top: .1rem; color: #6b7280; font-size: .75rem; }
 .header-actions { gap: .55rem; flex-wrap: wrap; justify-content: flex-end; }
-.status-pill, .theme-toggle { border: 1px solid #d9dee6; border-radius: 999px; background: #fff; color: #4b5563; font-size: .78rem; font-weight: 700; }
-.status-pill { gap: .4rem; padding: .42rem .65rem; }
-.status-dot { width: .45rem; height: .45rem; border-radius: 999px; background: #94a3b8; }
-.status-pill.unlocked { border-color: #99d5ae; background: #f1fbf4; color: #176b38; }
-.status-pill.unlocked .status-dot { background: #22a05b; }
+.theme-toggle { border: 1px solid #d9dee6; border-radius: 999px; background: #fff; color: #4b5563; font-size: .78rem; font-weight: 700; }
 .theme-toggle { display: inline-flex; align-items: center; gap: .35rem; padding: .42rem .65rem; }
 .theme-toggle:hover { background: #f3f5f7; }
 
@@ -62,10 +58,7 @@ textarea { resize: vertical; }
 .danger-quiet { border: 0; background: transparent; color: #a1312d; font-weight: 750; padding: .65rem .3rem; }
 .text-button { width: fit-content; border: 0; background: transparent; color: #1d4ed8; padding: .4rem 0; font-size: .84rem; font-weight: 700; text-decoration: underline; text-underline-offset: .16rem; }
 .icon-text-button { display: inline-flex; align-items: center; gap: .35rem; }
-.lock-secondary-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: .45rem 1.15rem; margin-top: 1rem; border-top: 1px solid #e5e7eb; padding-top: .8rem; }
-.unlock-usb-option { display: grid; gap: .55rem; border: 1px solid #dbe5f7; border-radius: .75rem; background: #f7faff; padding: .7rem; }
-.unlock-usb-option .button { width: 100%; }
-.unlock-usb-option .helper { margin: 0; padding: 0 .05rem; }
+.lock-secondary-actions { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: .45rem 1.15rem; margin-top: 1rem; border-top: 1px solid #e5e7eb; padding-top: .8rem; }
 .master-unlock-toggle { width: 100%; text-decoration: none; }
 .master-unlock-fields { border-top: 1px solid #e5e7eb; padding-top: 1rem; }
 .import-prompt { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-top: .15rem; padding-top: .9rem; border-top: 1px solid #e5e7eb; color: #667085; font-size: .82rem; }
@@ -157,8 +150,7 @@ textarea { resize: vertical; }
 
 :root[data-theme="dark"] .app-header { border-color: #2b3139; }
 :root[data-theme="dark"] .brand small, :root[data-theme="dark"] .lead, :root[data-theme="dark"] .helper, :root[data-theme="dark"] .entry-summary p, :root[data-theme="dark"] .empty-state, :root[data-theme="dark"] .import-prompt { color: #aeb7c4; }
-:root[data-theme="dark"] .status-pill, :root[data-theme="dark"] .theme-toggle, :root[data-theme="dark"] .hero-card, :root[data-theme="dark"] .panel, :root[data-theme="dark"] .modal, :root[data-theme="dark"] .button.secondary, :root[data-theme="dark"] .card-button, :root[data-theme="dark"] .entry-card { border-color: #343b45; background: #1a1f26; color: #edf0f5; }
-:root[data-theme="dark"] .status-pill.unlocked { border-color: #277246; background: #14261a; color: #b9edc9; }
+:root[data-theme="dark"] .theme-toggle, :root[data-theme="dark"] .hero-card, :root[data-theme="dark"] .panel, :root[data-theme="dark"] .modal, :root[data-theme="dark"] .button.secondary, :root[data-theme="dark"] .card-button, :root[data-theme="dark"] .entry-card { border-color: #343b45; background: #1a1f26; color: #edf0f5; }
 :root[data-theme="dark"] .hero-card h1, :root[data-theme="dark"] .vault-toolbar h1, :root[data-theme="dark"] .panel-heading h2, :root[data-theme="dark"] .entry-summary h3, :root[data-theme="dark"] .modal h2 { color: #f5f7fa; }
 :root[data-theme="dark"] input, :root[data-theme="dark"] textarea, :root[data-theme="dark"] select { border-color: #3b4451; background: #11161d; color: #f0f3f7; }
 :root[data-theme="dark"] input::placeholder, :root[data-theme="dark"] textarea::placeholder { color: #8490a0; }
@@ -172,7 +164,6 @@ textarea { resize: vertical; }
 :root[data-theme="dark"] .copy-button.card-button.copied { border-color: #23884e; background: #19723f; }
 :root[data-theme="dark"] .import-prompt { border-color: #343b45; }
 :root[data-theme="dark"] .lock-secondary-actions, :root[data-theme="dark"] .master-unlock-fields { border-color: #343b45; }
-:root[data-theme="dark"] .unlock-usb-option { border-color: #29466f; background: #142238; }
 :root[data-theme="dark"] .vault-select-button, :root[data-theme="dark"] .vault-select-list { border-color: #3b4451; background: #11161d; color: #f0f3f7; }
 :root[data-theme="dark"] .vault-select-button:hover { border-color: #5b6879; background: #1a212b; }
 :root[data-theme="dark"] .vault-select-option { color: #d4dae3; }
@@ -203,7 +194,6 @@ textarea { resize: vertical; }
   .header-actions { gap: .35rem; }
   .theme-toggle { padding: .4rem .52rem; }
   .theme-toggle span:last-child { display: none; }
-  .status-pill { padding: .4rem .55rem; }
   .screen.narrow { margin: 1.5rem auto; }
   .vault-toolbar { margin-top: 1rem; }
   .toolbar-actions { width: 100%; justify-content: flex-start; }

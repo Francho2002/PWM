@@ -110,10 +110,6 @@ function setScreen(name) {
   $('setupScreen').classList.toggle('hidden', name !== 'setup');
   $('unlockScreen').classList.toggle('hidden', name !== 'unlock');
   $('vaultScreen').classList.toggle('hidden', name !== 'vault');
-  $('vaultStatus').classList.toggle('unlocked', name === 'vault');
-  $('vaultStatus').lastElementChild.textContent = name === 'vault'
-    ? `Abierta · ${state.vaultName}`
-    : 'Bloqueada';
   if (name === 'vault') $('currentVaultName').textContent = state.vaultName;
   updateBackupReminder();
 }
@@ -639,12 +635,8 @@ function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
 
 function refreshUsbUnlockAvailability() {
   const button = $('unlockUsbKeyButton');
-  const helper = $('unlockUsbKeyHelper');
-  const option = $('unlockUsbOption');
   const available = state.index.vaults.length > 0;
-  option.classList.toggle('hidden', !available);
   button.classList.toggle('hidden', !available);
-  helper.classList.toggle('hidden', !available);
 }
 
 function setMasterUnlockExpanded(expanded, focus = false) {
