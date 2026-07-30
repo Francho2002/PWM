@@ -85,7 +85,8 @@ textarea { resize: vertical; }
 #exportButton.backup-due { border-color: #d97706; background: #fffbeb; color: #92400e; box-shadow: 0 0 0 3px #f59e0b30; animation: backup-export-pulse 1.1s ease-in-out infinite; }
 #exportButton.backup-due:hover { border-color: #b45309; background: #fef3c7; }
 .backup-reminder { display: flex; align-items: center; gap: .75rem; margin: -.25rem 0 1rem; border: 1px solid #f0c36a; border-radius: .75rem; padding: .75rem .9rem; background: #fffbeb; color: #78350f; font-size: .84rem; }
-.backup-reminder-icon { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; place-items: center; border-radius: 999px; background: #f59e0b; color: #fff; font-size: 1.1rem; font-weight: 900; }
+.backup-reminder-icon { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; place-items: center; border-radius: 999px; background: #f59e0b; color: #fff; line-height: 0; }
+.backup-reminder-icon svg { width: 1.18rem; height: 1.18rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .backup-reminder-copy { min-width: 0; }
 .backup-reminder-copy > strong, .backup-reminder-text > span, .backup-reminder-critical { display: block; }
 .backup-reminder-text > span { margin-top: .12rem; color: #92400e; line-height: 1.4; }
