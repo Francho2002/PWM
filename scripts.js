@@ -310,23 +310,28 @@ async function acquireWebVaultAccess(vaultId, temporary = false) {
         { mode: 'exclusive', ifAvailable: true },
         async (lock) => {
           if (!lock) {
-            resolve(null);
+            // El bloqueo existe, pero otra pestaña ya lo tiene. No hay que
+            // intentar la alternativa basada en localStorage: la eludiría.
+            resolve({ status: 'busy', access: null });
             return;
           }
           resolve({
-            kind: 'web-lock',
-            vaultId,
-            temporary,
-            release,
-            invalidated: false,
-            transactions: new Set(),
-            session: state.pageSession,
+            status: 'acquired',
+            access: {
+              kind: 'web-lock',
+              vaultId,
+              temporary,
+              release,
+              invalidated: false,
+              transactions: new Set(),
+              session: state.pageSession,
+            },
           });
           await hold;
         },
-      ).catch(() => resolve(null));
+      ).catch(() => resolve({ status: 'unavailable', access: null }));
     } catch (_) {
-      resolve(null);
+      resolve({ status: 'unavailable', access: null });
     }
   });
 }
@@ -338,8 +343,18 @@ async function acquireVaultAccess(vaultId, temporary = false) {
   const session = state.pageSession;
 
   let access = null;
-  if (navigator.locks?.request) access = await acquireWebVaultAccess(vaultId, temporary);
-  if (!access && !navigator.locks?.request) access = await acquireFallbackVaultAccess(vaultId, temporary);
+  const webLocksAvailable = typeof navigator.locks?.request === 'function';
+  if (webLocksAvailable) {
+    const webLock = await acquireWebVaultAccess(vaultId, temporary);
+    access = webLock.access;
+    // Si Web Locks está disponible pero no funciona, mantenemos la aplicación
+    // utilizable con la lease local. Si está ocupado, no hacemos fallback.
+    if (!access && webLock.status === 'unavailable') {
+      access = await acquireFallbackVaultAccess(vaultId, temporary);
+    }
+  } else {
+    access = await acquireFallbackVaultAccess(vaultId, temporary);
+  }
   if (!access || session !== state.pageSession) {
     disposeVaultAccess(access);
     return false;
@@ -830,7 +845,7 @@ async function writeValues(entries, access) {
     const close = trackWriteTransaction(access, database, transaction);
     try {
       entries.forEach(([key, value]) => store.put(value, key));
-    } catch (_) {
+    } catch (error) {
       close();
       try { transaction.abort(); } catch (_) { /* ya terminó */ }
       reject(error);
