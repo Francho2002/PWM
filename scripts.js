@@ -22,10 +22,16 @@ const HOME_BACKGROUND_INTERVAL_MS = 10_000;
 // El índice de bóvedas también es compartido: una única exclusión para todo el
 // origen evita que dos pestañas escriban índices desde snapshots viejos.
 const VAULT_ACCESS_LOCK_NAME = 'pwm-vault-open';
-const VAULT_ACCESS_LEASE_KEY = 'pwm-vault-lease';
+// Registro interno: nunca forma parte del índice ni de una bóveda exportada.
+// IndexedDB serializa las transacciones readwrite de este store, por lo que es
+// la autoridad atómica cuando Web Locks no está disponible.
+const VAULT_ACCESS_LEASE_RECORD_KEY = '__pwm_internal:access-lease';
+// Compatibilidad temporal con pestañas que todavía ejecutan una versión que
+// usaba localStorage. No autoriza escrituras: IndexedDB sigue siendo la fuente
+// de verdad y el cercado se verifica allí dentro de cada transacción.
+const LEGACY_VAULT_ACCESS_LEASE_KEY = 'pwm-vault-lease';
 const VAULT_ACCESS_LEASE_MS = 15_000;
 const VAULT_ACCESS_REFRESH_MS = 5_000;
-const VAULT_ACCESS_SETTLE_MS = 80;
 const TAB_INSTANCE_ID = crypto.randomUUID();
 const HOME_BACKGROUNDS = Object.freeze([
   'home-niebla',
@@ -159,47 +165,96 @@ function vaultAccessName() {
   return VAULT_ACCESS_LOCK_NAME;
 }
 
-function vaultLeaseKey() {
-  return VAULT_ACCESS_LEASE_KEY;
+function validVaultLease(lease) {
+  return Boolean(
+    lease
+    && typeof lease === 'object'
+    && lease.format === 'pwm-access-lease'
+    && typeof lease.owner === 'string'
+    && typeof lease.token === 'string'
+    && Number.isFinite(lease.expiresAt),
+  );
 }
 
-function readVaultLease() {
+function accessOwnsLease(access, lease, now = Date.now()) {
+  return Boolean(
+    validVaultLease(lease)
+    && lease.owner === TAB_INSTANCE_ID
+    && lease.token === access.token
+    && lease.expiresAt > now,
+  );
+}
+
+function readLegacyVaultLease() {
   try {
-    const lease = JSON.parse(localStorage.getItem(vaultLeaseKey()));
+    const lease = JSON.parse(localStorage.getItem(LEGACY_VAULT_ACCESS_LEASE_KEY));
     if (
       lease
       && typeof lease.owner === 'string'
       && typeof lease.token === 'string'
       && Number.isFinite(lease.expiresAt)
-    ) {
-      return lease;
-    }
+    ) return lease;
   } catch (_) {
-    // El almacenamiento puede estar desactivado o contener datos inválidos.
+    // El espejo opcional puede no estar disponible.
   }
   return null;
 }
 
-function writeVaultLease(lease) {
+function liveLegacyVaultLease(lease, now = Date.now()) {
+  return Boolean(lease && lease.expiresAt > now);
+}
+
+function legacyLeaseConflicts() {
+  const lease = readLegacyVaultLease();
+  // Una lease viva de la versión anterior se trata como ajena, aun si el
+  // identificador de pestaña coincidiera por casualidad.
+  return liveLegacyVaultLease(lease);
+}
+
+function publishLegacyVaultLease(access) {
   try {
-    localStorage.setItem(vaultLeaseKey(), JSON.stringify(lease));
-    return true;
+    const existing = readLegacyVaultLease();
+    if (
+      liveLegacyVaultLease(existing)
+      && (existing.owner !== TAB_INSTANCE_ID || existing.token !== access.token)
+    ) {
+      return false;
+    }
+    localStorage.setItem(LEGACY_VAULT_ACCESS_LEASE_KEY, JSON.stringify({
+      owner: TAB_INSTANCE_ID,
+      token: access.token,
+      expiresAt: access.leaseExpiresAt,
+    }));
+    const confirmed = readLegacyVaultLease();
+    return Boolean(
+      confirmed
+      && confirmed.owner === TAB_INSTANCE_ID
+      && confirmed.token === access.token
+      && confirmed.expiresAt >= access.leaseExpiresAt,
+    );
   } catch (_) {
-    return false;
+    // El espejo no es necesario para la seguridad de esta versión.
+    return true;
+  }
+}
+
+function removeLegacyVaultLease(access) {
+  try {
+    const lease = readLegacyVaultLease();
+    if (lease?.owner === TAB_INSTANCE_ID && lease.token === access.token) {
+      localStorage.removeItem(LEGACY_VAULT_ACCESS_LEASE_KEY);
+    }
+  } catch (_) {
+    // La lease de IndexedDB expira aunque el espejo no pueda limpiarse.
   }
 }
 
 function ownsVaultAccess(vaultId = state.vaultId) {
   const access = state.vaultAccess;
   if (!access || access.invalidated || (!access.temporary && (!vaultId || access.vaultId !== vaultId))) return false;
-  if (access.kind === 'web-lock') return true;
-  const lease = readVaultLease();
-  return Boolean(
-    lease
-    && lease.owner === TAB_INSTANCE_ID
-    && lease.token === access.token
-    && lease.expiresAt > Date.now(),
-  );
+  // La comprobación autoritativa del token ocurre dentro de cada transacción
+  // readwrite. Esta guarda rápida evita operar tras una concesión ya vencida.
+  return access.leaseExpiresAt > Date.now();
 }
 
 function releaseVaultAccess() {
@@ -219,83 +274,237 @@ function disposeVaultAccess(access) {
   });
   access.transactions?.clear();
 
-  if (access.kind === 'web-lock') {
-    access.release();
-    return;
-  }
-
   window.clearInterval(access.refreshTimer);
-  const lease = readVaultLease();
-  if (lease?.owner === TAB_INSTANCE_ID && lease.token === access.token) {
-    try {
-      localStorage.removeItem(vaultLeaseKey());
-    } catch (_) {
-      // La pestaña se bloqueará igualmente aunque el navegador impida limpiar la concesión.
-    }
-  }
+  releaseVaultLease(access);
+  if (access.kind === 'web-lock') access.release();
 }
 
 function handleLostVaultAccess() {
-  if (!state.key) return;
-  lockVault();
+  // También puede ocurrir durante una operación temporal (crear, importar o
+  // desbloquear), antes de que state.key exista. En ese caso se invalida la
+  // sesión y se limpian formularios igual que al abandonar la página.
+  if (state.key) lockVault();
+  else lockVaultOnPageExit();
   showNotice(
     'Esta bóveda se abrió en otra pestaña. Se bloqueó aquí para evitar cambios en conflicto.',
     'error',
   );
 }
 
-function refreshVaultLease(access) {
-  if (state.vaultAccess !== access || !ownsVaultAccess(access.vaultId)) {
-    handleLostVaultAccess();
+async function acquireIndexedDbLease(vaultId, temporary = false, kind = 'lease', release = null) {
+  if (legacyLeaseConflicts()) return { status: 'busy', access: null };
+  const token = crypto.randomUUID();
+  let expiresAt = 0;
+  let database;
+  try {
+    database = await openDatabase();
+  } catch (_) {
+    return { status: 'unavailable', access: null };
+  }
+
+  return new Promise((resolve) => {
+    let transaction;
+    let store;
+    let request;
+    try {
+      transaction = database.transaction(STORE_NAME, 'readwrite');
+      store = transaction.objectStore(STORE_NAME);
+      request = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
+    } catch (_) {
+      database.close();
+      resolve({ status: 'unavailable', access: null });
+      return;
+    }
+    let granted = false;
+    let outcome = 'unavailable';
+
+    const stop = (status = 'unavailable') => {
+      outcome = status;
+      try { transaction.abort(); } catch (_) { /* ya terminó */ }
+    };
+
+    request.onsuccess = () => {
+      try {
+        const existing = request.result;
+        // Una concesión viva, incluso de esta misma pestaña, se respeta. Así
+        // dos solicitudes concurrentes no pueden reemplazarse entre sí.
+        if (validVaultLease(existing) && existing.expiresAt > Date.now()) {
+          stop('busy');
+          return;
+        }
+        // La apertura de IndexedDB puede haber esperado detrás de otra
+        // transacción: el vencimiento se calcula recién al reclamarla.
+        expiresAt = Date.now() + VAULT_ACCESS_LEASE_MS;
+        store.put({
+          format: 'pwm-access-lease',
+          owner: TAB_INSTANCE_ID,
+          token,
+          expiresAt,
+        }, VAULT_ACCESS_LEASE_RECORD_KEY);
+        granted = true;
+      } catch (_) {
+        stop('unavailable');
+      }
+    };
+    request.onerror = () => stop('unavailable');
+    transaction.oncomplete = () => {
+      database.close();
+      if (!granted) {
+        resolve({ status: outcome, access: null });
+        return;
+      }
+      const access = {
+        kind,
+        vaultId,
+        temporary,
+        token,
+        leaseExpiresAt: expiresAt,
+        refreshTimer: null,
+        refreshInFlight: false,
+        transactions: new Set(),
+        session: state.pageSession,
+        release,
+      };
+      if (!publishLegacyVaultLease(access)) {
+        access.invalidated = true;
+        void releaseVaultLease(access);
+        resolve({ status: 'busy', access: null });
+        return;
+      }
+      access.refreshTimer = window.setInterval(
+        () => { void refreshVaultLease(access); },
+        VAULT_ACCESS_REFRESH_MS,
+      );
+      resolve({ status: 'acquired', access });
+    };
+    transaction.onerror = () => {
+      database.close();
+      resolve({ status: 'unavailable', access: null });
+    };
+    transaction.onabort = () => {
+      database.close();
+      resolve({ status: granted ? 'unavailable' : outcome, access: null });
+    };
+  });
+}
+
+async function renewVaultLease(access) {
+  let database;
+  try {
+    database = await openDatabase();
+  } catch (_) {
+    return false;
+  }
+  return new Promise((resolve) => {
+    let transaction;
+    let store;
+    let request;
+    try {
+      transaction = database.transaction(STORE_NAME, 'readwrite');
+      store = transaction.objectStore(STORE_NAME);
+      request = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
+    } catch (_) {
+      database.close();
+      resolve(false);
+      return;
+    }
+    let nextExpiresAt = 0;
+    let renewed = false;
+    const stop = () => {
+      try { transaction.abort(); } catch (_) { /* ya terminó */ }
+    };
+    request.onsuccess = () => {
+      try {
+        if (!accessOwnsLease(access, request.result)) {
+          stop();
+          return;
+        }
+        nextExpiresAt = Date.now() + VAULT_ACCESS_LEASE_MS;
+        store.put({ ...request.result, expiresAt: nextExpiresAt }, VAULT_ACCESS_LEASE_RECORD_KEY);
+        renewed = true;
+      } catch (_) {
+        stop();
+      }
+    };
+    request.onerror = stop;
+    transaction.oncomplete = () => {
+      database.close();
+      if (renewed) {
+        access.leaseExpiresAt = nextExpiresAt;
+        renewed = publishLegacyVaultLease(access);
+      }
+      resolve(renewed);
+    };
+    transaction.onerror = () => {
+      database.close();
+      resolve(false);
+    };
+    transaction.onabort = () => {
+      database.close();
+      resolve(false);
+    };
+  });
+}
+
+async function releaseVaultLease(access) {
+  removeLegacyVaultLease(access);
+  try {
+    const database = await openDatabase();
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
+    request.onsuccess = () => {
+      if (accessOwnsLease(access, request.result)) {
+        try { store.delete(VAULT_ACCESS_LEASE_RECORD_KEY); } catch (_) { /* se vencerá pronto */ }
+      }
+    };
+    transaction.oncomplete = transaction.onerror = transaction.onabort = () => database.close();
+  } catch (_) {
+    // Si no se puede liberar, la concesión expira y las escrituras siguen cercadas por token.
+  }
+}
+
+async function refreshVaultLease(access) {
+  if (
+    access.refreshInFlight
+    || state.vaultAccess !== access
+    || access.invalidated
+    || !ownsVaultAccess(access.vaultId)
+  ) {
+    if (state.vaultAccess === access && !access.refreshInFlight) handleLostVaultAccess();
     return;
   }
-  const renewed = {
-    owner: TAB_INSTANCE_ID,
-    token: access.token,
-    expiresAt: Date.now() + VAULT_ACCESS_LEASE_MS,
-  };
-  if (!writeVaultLease(renewed)) handleLostVaultAccess();
+  access.refreshInFlight = true;
+  let renewed = false;
+  try {
+    renewed = await renewVaultLease(access);
+  } catch (_) {
+    renewed = false;
+  } finally {
+    access.refreshInFlight = false;
+  }
+  if (!renewed && state.vaultAccess === access) handleLostVaultAccess();
+}
+
+function handleLegacyVaultLeaseStorage(event) {
+  if (event.key !== LEGACY_VAULT_ACCESS_LEASE_KEY) return;
+  const access = state.vaultAccess;
+  const lease = readLegacyVaultLease();
+  if (
+    !access
+    || access.invalidated
+    || !lease
+    || lease.expiresAt <= Date.now()
+    || (lease.owner === TAB_INSTANCE_ID && lease.token === access.token)
+  ) return;
+  // Una pestaña antigua no conoce el cercado IndexedDB; se bloquea esta
+  // pestaña inmediatamente para mantener la compatibilidad durante el cambio.
+  handleLostVaultAccess();
 }
 
 async function acquireFallbackVaultAccess(vaultId, temporary = false) {
-  const existing = readVaultLease();
-  if (existing && existing.expiresAt > Date.now() && existing.owner !== TAB_INSTANCE_ID) {
-    return null;
-  }
-
-  const token = crypto.randomUUID();
-  const lease = {
-    owner: TAB_INSTANCE_ID,
-    token,
-    expiresAt: Date.now() + VAULT_ACCESS_LEASE_MS,
-  };
-  if (!writeVaultLease(lease)) return null;
-
-  await new Promise((resolve) => window.setTimeout(resolve, VAULT_ACCESS_SETTLE_MS));
-  const confirmed = readVaultLease();
-  if (
-    !confirmed
-    || confirmed.owner !== TAB_INSTANCE_ID
-    || confirmed.token !== token
-    || confirmed.expiresAt <= Date.now()
-  ) {
-    return null;
-  }
-
-  const access = {
-    kind: 'lease',
-    vaultId,
-    temporary,
-    token,
-    refreshTimer: null,
-    transactions: new Set(),
-    session: state.pageSession,
-  };
-  access.refreshTimer = window.setInterval(
-    () => refreshVaultLease(access),
-    VAULT_ACCESS_REFRESH_MS,
-  );
-  return access;
+  const result = await acquireIndexedDbLease(vaultId, temporary);
+  return result.access;
 }
 
 async function acquireWebVaultAccess(vaultId, temporary = false) {
@@ -310,23 +519,16 @@ async function acquireWebVaultAccess(vaultId, temporary = false) {
         { mode: 'exclusive', ifAvailable: true },
         async (lock) => {
           if (!lock) {
-            // El bloqueo existe, pero otra pestaña ya lo tiene. No hay que
-            // intentar la alternativa basada en localStorage: la eludiría.
+            // Otra pestaña ya tiene el bloqueo fuerte. No se inicia una
+            // segunda vía de adquisición mientras siga ocupado.
             resolve({ status: 'busy', access: null });
             return;
           }
-          resolve({
-            status: 'acquired',
-            access: {
-              kind: 'web-lock',
-              vaultId,
-              temporary,
-              release,
-              invalidated: false,
-              transactions: new Set(),
-              session: state.pageSession,
-            },
-          });
+          // Incluso Web Locks mantiene una lease en IndexedDB. Así distintas
+          // capacidades del navegador no pueden eludir el mismo cercado.
+          const lease = await acquireIndexedDbLease(vaultId, temporary, 'web-lock', release);
+          resolve(lease);
+          if (!lease.access) return;
           await hold;
         },
       ).catch(() => resolve({ status: 'unavailable', access: null }));
@@ -348,7 +550,7 @@ async function acquireVaultAccess(vaultId, temporary = false) {
     const webLock = await acquireWebVaultAccess(vaultId, temporary);
     access = webLock.access;
     // Si Web Locks está disponible pero no funciona, mantenemos la aplicación
-    // utilizable con la lease local. Si está ocupado, no hacemos fallback.
+    // utilizable con la lease transaccional. Si está ocupado, no hacemos fallback.
     if (!access && webLock.status === 'unavailable') {
       access = await acquireFallbackVaultAccess(vaultId, temporary);
     }
@@ -396,18 +598,6 @@ function assertVaultAccess(access, requireUnlocked = false) {
   ) {
     throw new Error('La sesión de la bóveda terminó antes de completar la operación.');
   }
-}
-
-function handleVaultLeaseStorage(event) {
-  const access = state.vaultAccess;
-  if (
-    access?.kind !== 'lease'
-    || event.key !== vaultLeaseKey()
-    || ownsVaultAccess(access.vaultId)
-  ) {
-    return;
-  }
-  handleLostVaultAccess();
 }
 
 function applyTheme(theme) {
@@ -835,6 +1025,26 @@ function trackWriteTransaction(access, database, transaction) {
   };
 }
 
+function assertLeaseFence(access, lease) {
+  if (!accessOwnsLease(access, lease)) {
+    throw new Error('La concesión de esta bóveda venció o fue reemplazada por otra pestaña.');
+  }
+}
+
+function queueFencedWrite(store, access, write, fail) {
+  const leaseRequest = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
+  leaseRequest.onsuccess = () => {
+    try {
+      assertVaultAccess(access);
+      assertLeaseFence(access, leaseRequest.result);
+      write();
+    } catch (error) {
+      fail(error);
+    }
+  };
+  leaseRequest.onerror = () => fail(new Error('No pude comprobar la concesión de esta bóveda.'));
+}
+
 async function writeValues(entries, access) {
   assertVaultAccess(access);
   const database = await openDatabase();
@@ -844,7 +1054,13 @@ async function writeValues(entries, access) {
     const store = transaction.objectStore(STORE_NAME);
     const close = trackWriteTransaction(access, database, transaction);
     try {
-      entries.forEach(([key, value]) => store.put(value, key));
+      queueFencedWrite(store, access, () => {
+        entries.forEach(([key, value]) => store.put(value, key));
+      }, (error) => {
+        close();
+        try { transaction.abort(); } catch (_) { /* transaction already ended */ }
+        reject(error);
+      });
     } catch (error) {
       close();
       try { transaction.abort(); } catch (_) { /* ya terminó */ }
@@ -880,8 +1096,14 @@ async function writeAndDeleteValues(entries, keys, access) {
     const store = transaction.objectStore(STORE_NAME);
     const close = trackWriteTransaction(access, database, transaction);
     try {
-      entries.forEach(([key, value]) => store.put(value, key));
-      keys.forEach((key) => store.delete(key));
+      queueFencedWrite(store, access, () => {
+        entries.forEach(([key, value]) => store.put(value, key));
+        keys.forEach((key) => store.delete(key));
+      }, (error) => {
+        close();
+        try { transaction.abort(); } catch (_) { /* transaction already ended */ }
+        reject(error);
+      });
     } catch (error) {
       close();
       try { transaction.abort(); } catch (_) { /* ya terminó */ }
@@ -919,6 +1141,7 @@ async function commitVaultSnapshot(access, vaultId, expectedRecordSnapshot, expe
     const transaction = database.transaction(STORE_NAME, 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
     const close = trackWriteTransaction(access, database, transaction);
+    const leaseRequest = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
     const indexRequest = store.get(INDEX_KEY);
     const recordRequest = store.get(vaultRecordKey(vaultId));
     let result = null;
@@ -929,9 +1152,14 @@ async function commitVaultSnapshot(access, vaultId, expectedRecordSnapshot, expe
     };
 
     const tryCommit = () => {
-      if (indexRequest.readyState !== 'done' || recordRequest.readyState !== 'done') return;
+      if (
+        leaseRequest.readyState !== 'done'
+        || indexRequest.readyState !== 'done'
+        || recordRequest.readyState !== 'done'
+      ) return;
       try {
         assertVaultAccess(access, true);
+        assertLeaseFence(access, leaseRequest.result);
         const storedIndex = indexRequest.result;
         const storedRecord = recordRequest.result;
         if (!validateVaultIndex(storedIndex) || !validateVaultRecord(storedRecord)) {
@@ -961,8 +1189,10 @@ async function commitVaultSnapshot(access, vaultId, expectedRecordSnapshot, expe
     };
     indexRequest.onsuccess = tryCommit;
     recordRequest.onsuccess = tryCommit;
+    leaseRequest.onsuccess = tryCommit;
     indexRequest.onerror = () => fail('No pude comprobar el estado de la bóveda.');
     recordRequest.onerror = () => fail('No pude comprobar el estado de la bóveda.');
+    leaseRequest.onerror = () => fail('No pude comprobar la concesión de esta bóveda.');
     transaction.oncomplete = () => {
       close();
       try {
@@ -3282,7 +3512,7 @@ async function start() {
   $('importInput').addEventListener('change', importBackup);
   window.addEventListener('pagehide', lockVaultOnPageExit);
   window.addEventListener('pageshow', lockRestoredVault);
-  window.addEventListener('storage', handleVaultLeaseStorage);
+  window.addEventListener('storage', handleLegacyVaultLeaseStorage);
   ['click', 'keydown', 'touchstart'].forEach(
     (eventName) => document.addEventListener(eventName, resetAutoLock),
   );
