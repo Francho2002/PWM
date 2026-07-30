@@ -1,3 +1,4 @@
+(() => {
 'use strict';
 
 const DB_NAME = 'pwm-local-vault';
@@ -939,6 +940,15 @@ function emptyElement(element) {
   while (element.firstChild) element.removeChild(element.firstChild);
 }
 
+function clearEntryElements() {
+  $('entries').querySelectorAll('.masked-password').forEach((password) => {
+    password.textContent = '';
+    password.removeAttribute('data-value');
+    password.removeAttribute('data-revealed');
+  });
+  emptyElement($('entries'));
+}
+
 function createAction(label, action, id, danger = false, primary = false) {
   const button = document.createElement('button');
   button.type = 'button';
@@ -970,7 +980,6 @@ function entryCard(entry) {
   const password = document.createElement('code');
   password.className = 'masked-password';
   password.textContent = '••••••••••••••••';
-  password.dataset.value = entry.password;
   password.dataset.revealed = 'false';
   details.append(password);
 
@@ -993,7 +1002,7 @@ function renderEntries() {
       .join(' ').toLocaleLowerCase('es').includes(query))
     .sort((a, b) => a.service.localeCompare(b.service, 'es'));
   const container = $('entries');
-  emptyElement(container);
+  clearEntryElements();
   if (!matching.length) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
@@ -1021,6 +1030,11 @@ function clearEditor() {
   $('password').type = 'password';
   $('toggleEditorPassword').setAttribute('aria-label', 'Mostrar contraseña');
   setOptionalFieldsExpanded(false);
+}
+
+function clearVaultDom() {
+  clearEntryElements();
+  emptyElement($('historyList'));
 }
 
 function editEntry(id) {
@@ -1315,6 +1329,7 @@ function lockVault(expired = false) {
   }
   if ($('pendingBackupDialog').open) closePendingBackupDialog();
   if ($('historyDialog').open) $('historyDialog').close();
+  clearVaultDom();
   state.key = null;
   if (state.keyBytes) state.keyBytes.fill(0);
   state.keyBytes = null;
@@ -2018,3 +2033,4 @@ async function start() {
 }
 
 start();
+})();
