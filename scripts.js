@@ -606,7 +606,7 @@ function selectVault(vaultId) {
   if (!vault) return;
   $('vaultSelect').value = vaultId;
   state.index.activeVaultId = vaultId;
-  $('unlockMaster').value = '';
+  setMasterUnlockExpanded(false);
   renderVaultPicker(vaultId);
   refreshUsbUnlockAvailability();
   resetAutoLock();
@@ -643,6 +643,16 @@ function refreshUsbUnlockAvailability() {
   const available = state.index.vaults.length > 0;
   button.classList.toggle('hidden', !available);
   helper.classList.toggle('hidden', !available);
+}
+
+function setMasterUnlockExpanded(expanded, focus = false) {
+  $('masterUnlockFields').classList.toggle('hidden', !expanded);
+  $('toggleMasterUnlock').setAttribute('aria-expanded', String(expanded));
+  $('masterUnlockToggleText').textContent = expanded
+    ? 'Ocultar clave maestra'
+    : 'Usar clave maestra';
+  if (!expanded) $('unlockMaster').value = '';
+  if (expanded && focus) $('unlockMaster').focus();
 }
 
 function updateVaultMetadata(index, vaultId, name, updatedAt, updates = {}) {
@@ -1138,6 +1148,7 @@ function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payloa
   state.vaultName = vaultName;
   state.index = index;
   $('unlockForm').reset();
+  setMasterUnlockExpanded(false);
   clearEditor();
   setScreen('vault');
   renderEntries();
@@ -1243,6 +1254,7 @@ function lockVault(expired = false) {
   clearEditor();
   $('search').value = '';
   $('unlockForm').reset();
+  setMasterUnlockExpanded(false);
   renderVaultSelect();
   if (state.index.vaults.length) {
     setScreen('unlock');
@@ -1864,6 +1876,11 @@ async function start() {
     if (!event.target.closest('.vault-picker')) closeVaultPicker();
   });
 
+  $('toggleMasterUnlock').addEventListener('click', () => {
+    const expanded = $('toggleMasterUnlock').getAttribute('aria-expanded') === 'true';
+    setMasterUnlockExpanded(!expanded, !expanded);
+    resetAutoLock();
+  });
   $('unlockUsbKeyButton').addEventListener('click', () => $('usbKeyInput').click());
   $('usbKeyInput').addEventListener('change', unlockWithUsbKey);
 

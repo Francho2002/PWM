@@ -113,13 +113,16 @@
             </div>
             <input id="vaultSelect" type="hidden">
           </div>
-          <label>
-            <span>Clave maestra</span>
-            <input id="unlockMaster" type="password" autocomplete="current-password" required autofocus placeholder="Tu clave maestra">
-          </label>
-          <button class="button primary" type="submit">Desbloquear</button>
-          <button id="unlockUsbKeyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Importar llave</button>
+          <button id="unlockUsbKeyButton" class="button primary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Importar llave</button>
           <p id="unlockUsbKeyHelper" class="helper">Elegí el archivo llave desde tu pendrive. PWM encontrará automáticamente su bóveda.</p>
+          <button id="toggleMasterUnlock" class="text-button icon-text-button master-unlock-toggle" type="button" aria-expanded="false" aria-controls="masterUnlockFields"><svg class="button-icon" aria-hidden="true"><use href="#icon-key"></use></svg><span id="masterUnlockToggleText">Usar clave maestra</span></button>
+          <div id="masterUnlockFields" class="stack master-unlock-fields hidden">
+            <label>
+              <span>Clave maestra</span>
+              <input id="unlockMaster" type="password" autocomplete="current-password" required placeholder="Tu clave maestra">
+            </label>
+            <button class="button primary" type="submit">Desbloquear</button>
+          </div>
         </form>
         <div class="lock-secondary-actions">
           <button id="showImportFromLock" class="text-button icon-text-button" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar bóveda</button>

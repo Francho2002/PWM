@@ -63,6 +63,8 @@ textarea { resize: vertical; }
 .text-button { width: fit-content; border: 0; background: transparent; color: #1d4ed8; padding: .4rem 0; font-size: .84rem; font-weight: 700; text-decoration: underline; text-underline-offset: .16rem; }
 .icon-text-button { display: inline-flex; align-items: center; gap: .35rem; }
 .lock-secondary-actions { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; }
+.master-unlock-toggle { margin-top: -.2rem; }
+.master-unlock-fields { padding-top: .1rem; }
 .import-prompt { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-top: .15rem; padding-top: .9rem; border-top: 1px solid #e5e7eb; color: #667085; font-size: .82rem; }
 .import-prompt .text-button { flex-shrink: 0; }
 .vault-picker { position: relative; }
