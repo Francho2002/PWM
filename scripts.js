@@ -145,6 +145,7 @@ const state = {
   beforeUnloadWarningActive: false,
   dismissedBackupReminderRecord: null,
   vaultAccess: null,
+  pendingVaultAccessRelease: null,
   pageSession: 0,
   usbKeyBusy: false,
 };
@@ -257,14 +258,33 @@ function ownsVaultAccess(vaultId = state.vaultId) {
   return access.leaseExpiresAt > Date.now();
 }
 
+function waitForPendingVaultAccessRelease() {
+  const pending = state.pendingVaultAccessRelease;
+  return pending || Promise.resolve();
+}
+
 function releaseVaultAccess() {
   const access = state.vaultAccess;
   state.vaultAccess = null;
-  disposeVaultAccess(access);
+  if (!access) return waitForPendingVaultAccessRelease();
+
+  const release = Promise.resolve(disposeVaultAccess(access)).catch(() => undefined);
+  const previous = state.pendingVaultAccessRelease;
+  const pending = previous
+    ? Promise.allSettled([previous, release]).then(() => undefined)
+    : release;
+  state.pendingVaultAccessRelease = pending;
+  void pending.then(() => {
+    if (state.pendingVaultAccessRelease === pending) {
+      state.pendingVaultAccessRelease = null;
+    }
+  });
+  return pending;
 }
 
 function disposeVaultAccess(access) {
-  if (!access) return;
+  if (!access) return Promise.resolve();
+  if (access.releasePromise) return access.releasePromise;
   access.invalidated = true;
 
   // Una escritura que ya estaba en curso no debe poder terminar después de
@@ -275,8 +295,16 @@ function disposeVaultAccess(access) {
   access.transactions?.clear();
 
   window.clearInterval(access.refreshTimer);
-  releaseVaultLease(access);
-  if (access.kind === 'web-lock') access.release();
+  access.releasePromise = Promise.resolve(releaseVaultLease(access))
+    .catch(() => undefined)
+    .then(() => {
+      // El Web Lock se conserva hasta terminar de liberar la lease
+      // transaccional, para no abrir una ventana de doble adquisicion.
+      if (access.kind === 'web-lock') {
+        try { access.release(); } catch (_) { /* ya fue liberado */ }
+      }
+    });
+  return access.releasePromise;
 }
 
 function handleLostVaultAccess() {
@@ -367,8 +395,9 @@ async function acquireIndexedDbLease(vaultId, temporary = false, kind = 'lease',
       };
       if (!publishLegacyVaultLease(access)) {
         access.invalidated = true;
-        void releaseVaultLease(access);
-        resolve({ status: 'busy', access: null });
+        void releaseVaultLease(access).finally(() => {
+          resolve({ status: 'busy', access: null });
+        });
         return;
       }
       access.refreshTimer = window.setInterval(
@@ -447,20 +476,47 @@ async function renewVaultLease(access) {
 }
 
 async function releaseVaultLease(access) {
-  removeLegacyVaultLease(access);
+  let database;
   try {
-    const database = await openDatabase();
-    const transaction = database.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
-    request.onsuccess = () => {
-      if (accessOwnsLease(access, request.result)) {
-        try { store.delete(VAULT_ACCESS_LEASE_RECORD_KEY); } catch (_) { /* se vencerá pronto */ }
+    database = await openDatabase();
+    return await new Promise((resolve) => {
+      let completed = false;
+      const finish = (released) => {
+        if (completed) return;
+        completed = true;
+        database.close();
+        if (released) removeLegacyVaultLease(access);
+        resolve(released);
+      };
+      let transaction;
+      try {
+        transaction = database.transaction(STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.get(VAULT_ACCESS_LEASE_RECORD_KEY);
+        let deleted = false;
+        request.onsuccess = () => {
+          try {
+            if (accessOwnsLease(access, request.result)) {
+              store.delete(VAULT_ACCESS_LEASE_RECORD_KEY);
+              deleted = true;
+            }
+          } catch (_) {
+            try { transaction.abort(); } catch (_) { /* ya terminó */ }
+          }
+        };
+        request.onerror = () => {
+          try { transaction.abort(); } catch (_) { /* ya terminó */ }
+        };
+        transaction.oncomplete = () => finish(deleted);
+        transaction.onerror = () => finish(false);
+        transaction.onabort = () => finish(false);
+      } catch (_) {
+        finish(false);
       }
-    };
-    transaction.oncomplete = transaction.onerror = transaction.onabort = () => database.close();
+    });
   } catch (_) {
-    // Si no se puede liberar, la concesión expira y las escrituras siguen cercadas por token.
+    try { database?.close(); } catch (_) { /* ya cerrada */ }
+    return false;
   }
 }
 
@@ -540,9 +596,12 @@ async function acquireWebVaultAccess(vaultId, temporary = false) {
 
 async function acquireVaultAccess(vaultId, temporary = false) {
   if (ownsVaultAccess(vaultId)) return true;
-  if (state.vaultAccess) releaseVaultAccess();
-
+  // Se captura antes de esperar una liberación: pagehide puede ocurrir durante
+  // esa espera y no debe permitir instalar un acceso después de abandonar.
   const session = state.pageSession;
+  if (state.vaultAccess) await releaseVaultAccess();
+  await waitForPendingVaultAccessRelease();
+  if (session !== state.pageSession) return false;
 
   let access = null;
   const webLocksAvailable = typeof navigator.locks?.request === 'function';
@@ -558,7 +617,7 @@ async function acquireVaultAccess(vaultId, temporary = false) {
     access = await acquireFallbackVaultAccess(vaultId, temporary);
   }
   if (!access || session !== state.pageSession) {
-    disposeVaultAccess(access);
+    await disposeVaultAccess(access);
     return false;
   }
 
@@ -575,7 +634,7 @@ async function withTemporaryVaultAccess(callback) {
   try {
     return await callback(access);
   } finally {
-    if (state.vaultAccess === access) releaseVaultAccess();
+    if (state.vaultAccess === access) await releaseVaultAccess();
   }
 }
 
@@ -2108,7 +2167,7 @@ async function createVault(event) {
     resetAutoLock();
     showNotice(`Bóveda “${vaultName}” creada.`);
   } catch (error) {
-    if (state.vaultAccess === access) releaseVaultAccess();
+    if (state.vaultAccess === access) await releaseVaultAccess();
     pendingKeyBytes?.fill(0);
     showNotice(
       error.message?.startsWith('Ya existe una bóveda')
@@ -2186,7 +2245,7 @@ async function unlockVault(event) {
     pendingKeyBytes = null;
     showNotice(`Bóveda “${metadata.name}” desbloqueada.`);
   } catch (error) {
-    if (state.vaultAccess === access) releaseVaultAccess();
+    if (state.vaultAccess === access) await releaseVaultAccess();
     pendingKeyBytes?.fill(0);
     showNotice(
       error.message === 'La bóveda ya no existe en este navegador.'
@@ -2285,7 +2344,7 @@ async function unlockWithUsbKey(event) {
     pendingKeyBytes = null;
     showNotice(`Bóveda “${metadata.name}” desbloqueada con el archivo llave.`);
   } catch (error) {
-    if (state.vaultAccess === access) releaseVaultAccess();
+    if (state.vaultAccess === access) await releaseVaultAccess();
     pendingKeyBytes?.fill(0);
     const knownMessages = [
       'El archivo llave no corresponde a ninguna bóveda de este navegador.',
@@ -2307,7 +2366,7 @@ async function unlockWithUsbKey(event) {
 function lockVault(expired = false) {
   window.clearTimeout(state.autoLockTimer);
   state.pageSession += 1;
-  releaseVaultAccess();
+  void releaseVaultAccess();
   if ($('changeMasterDialog').open) {
     $('changeMasterForm').reset();
     $('changeMasterDialog').close();
@@ -2362,7 +2421,7 @@ function lockVaultOnPageExit() {
   // Pagehide también puede ocurrir durante crear/desbloquear, cuando todavía
   // no existe state.key pero sí hay un lock o claves escritas en formularios.
   state.pageSession += 1;
-  releaseVaultAccess();
+  void releaseVaultAccess();
   $('setupForm').reset();
   $('setupMaster').value = '';
   $('setupConfirm').value = '';
