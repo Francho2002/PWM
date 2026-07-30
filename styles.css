@@ -10,6 +10,63 @@
 * { box-sizing: border-box; }
 body { min-width: 320px; min-height: 100vh; margin: 0; background: #f6f7f9; }
 :root[data-theme="dark"] body { background: #111418; }
+:root[data-home-background] { --home-background-size: cover; --home-background-position: center; }
+:root[data-home-background] body { background-color: #f6f7f9; background-image: var(--home-background); background-position: var(--home-background-position); background-repeat: no-repeat; background-size: var(--home-background-size); transition: background-color .35s ease; }
+:root[data-theme="dark"][data-home-background] body { background-color: #111418; }
+:root[data-home-background="home-niebla"] { --home-background: linear-gradient(135deg, #f3f6f8, #e2e9ee 52%, #f8f9fa); }
+:root[data-home-background="home-papel"] { --home-background: linear-gradient(135deg, #f7f3ea, #ebe5d8 50%, #f9f7f2); }
+:root[data-home-background="home-salvia"] { --home-background: linear-gradient(135deg, #eef3ed, #dce7db 52%, #f7f8f5); }
+:root[data-home-background="home-arena"] { --home-background: linear-gradient(135deg, #f6f1e8, #eadfce 54%, #fbfaf7); }
+:root[data-home-background="home-cielo"] { --home-background: linear-gradient(135deg, #eef4f8, #d9e5ee 52%, #f7fafc); }
+:root[data-home-background="home-pizarra"] { --home-background: linear-gradient(135deg, #e8edf1, #d6dfe7 52%, #f5f7f9); }
+:root[data-theme="dark"][data-home-background="home-niebla"] { --home-background: linear-gradient(135deg, #1d252c, #2b3942 52%, #161d23); }
+:root[data-theme="dark"][data-home-background="home-papel"] { --home-background: linear-gradient(135deg, #282722, #39362f 52%, #1d1d1a); }
+:root[data-theme="dark"][data-home-background="home-salvia"] { --home-background: linear-gradient(135deg, #1d2820, #304137 52%, #17201a); }
+:root[data-theme="dark"][data-home-background="home-arena"] { --home-background: linear-gradient(135deg, #2a2520, #40372d 52%, #1d1a17); }
+:root[data-theme="dark"][data-home-background="home-cielo"] { --home-background: linear-gradient(135deg, #18242c, #293b48 52%, #151d24); }
+:root[data-theme="dark"][data-home-background="home-pizarra"] { --home-background: linear-gradient(135deg, #1b2128, #303b47 52%, #151a20); }
+:root[data-vault-background] { --vault-overlay: linear-gradient(#f6f7f9bd, #f6f7f9bd); --vault-background-size: cover; --vault-background-position: center; --vault-background-repeat: no-repeat; }
+:root[data-theme="dark"][data-vault-background] { --vault-overlay: linear-gradient(#111418c9, #111418c9); }
+:root[data-vault-background] body { background-color: #f6f7f9; background-image: var(--vault-overlay), var(--vault-background); background-position: center, var(--vault-background-position); background-repeat: no-repeat, var(--vault-background-repeat); background-size: cover, var(--vault-background-size); }
+:root[data-theme="dark"][data-vault-background] body { background-color: #111418; }
+
+:root[data-vault-background="color-niebla"], .appearance-swatch[data-background="color-niebla"] { --vault-background: linear-gradient(#dfe7ed, #dfe7ed); }
+:root[data-vault-background="color-cielo"], .appearance-swatch[data-background="color-cielo"] { --vault-background: linear-gradient(#cde6ff, #cde6ff); }
+:root[data-vault-background="color-salvia"], .appearance-swatch[data-background="color-salvia"] { --vault-background: linear-gradient(#d8e5d7, #d8e5d7); }
+:root[data-vault-background="color-lavanda"], .appearance-swatch[data-background="color-lavanda"] { --vault-background: linear-gradient(#e6dcf5, #e6dcf5); }
+:root[data-vault-background="color-arena"], .appearance-swatch[data-background="color-arena"] { --vault-background: linear-gradient(#f1e1c3, #f1e1c3); }
+:root[data-vault-background="color-rosa"], .appearance-swatch[data-background="color-rosa"] { --vault-background: linear-gradient(#f3dce0, #f3dce0); }
+:root[data-vault-background="color-pizarra"], .appearance-swatch[data-background="color-pizarra"] { --vault-background: linear-gradient(#c9d1dc, #c9d1dc); }
+:root[data-vault-background="color-grafito"], .appearance-swatch[data-background="color-grafito"] { --vault-background: linear-gradient(#536273, #536273); }
+
+:root[data-vault-background="gradient-aurora"], .appearance-swatch[data-background="gradient-aurora"] { --vault-background: linear-gradient(135deg, #a7f3d0, #93c5fd 52%, #c4b5fd); }
+:root[data-vault-background="gradient-brisa"], .appearance-swatch[data-background="gradient-brisa"] { --vault-background: linear-gradient(135deg, #b9f3f1, #86b7f0 55%, #d0e6fa); }
+:root[data-vault-background="gradient-crepusculo"], .appearance-swatch[data-background="gradient-crepusculo"] { --vault-background: linear-gradient(135deg, #f8b195, #f67280 48%, #6c5b7b); }
+:root[data-vault-background="gradient-bosque"], .appearance-swatch[data-background="gradient-bosque"] { --vault-background: linear-gradient(135deg, #b7d7b5, #5c8d6b 52%, #2f5d50); }
+:root[data-vault-background="gradient-lila"], .appearance-swatch[data-background="gradient-lila"] { --vault-background: linear-gradient(135deg, #f0d9ff, #bda7ed 50%, #91a7e8); }
+:root[data-vault-background="gradient-coral"], .appearance-swatch[data-background="gradient-coral"] { --vault-background: linear-gradient(135deg, #ffd1ba, #fb9b8c 55%, #f0b5d5); }
+:root[data-vault-background="gradient-nocturno"], .appearance-swatch[data-background="gradient-nocturno"] { --vault-background: linear-gradient(135deg, #152a4a, #294b77 50%, #315e8b); }
+:root[data-vault-background="gradient-amanecer"], .appearance-swatch[data-background="gradient-amanecer"] { --vault-background: linear-gradient(135deg, #fff0b3, #ffba92 48%, #e287a8); }
+:root[data-vault-background="gradient-menta"], .appearance-swatch[data-background="gradient-menta"] { --vault-background: linear-gradient(135deg, #dbf5e1, #9ee2c4 50%, #7cb8cb); }
+:root[data-vault-background="gradient-tinta"], .appearance-swatch[data-background="gradient-tinta"] { --vault-background: linear-gradient(135deg, #202a44, #465d86 52%, #a6b0c5); }
+
+:root[data-vault-background="pattern-cuadricula"], .appearance-swatch[data-background="pattern-cuadricula"] { --vault-background: linear-gradient(#ffffffa8 1px, transparent 1px), linear-gradient(90deg, #ffffffa8 1px, #d5e3f4 1px); --vault-background-size: 22px 22px; --vault-background-repeat: repeat, repeat; }
+:root[data-vault-background="pattern-puntos"], .appearance-swatch[data-background="pattern-puntos"] { --vault-background: radial-gradient(#5784ba 1.2px, #e4eff9 1.2px); --vault-background-size: 15px 15px; --vault-background-repeat: repeat; }
+:root[data-vault-background="pattern-lineas"], .appearance-swatch[data-background="pattern-lineas"] { --vault-background: repeating-linear-gradient(135deg, #e9e1d4 0 7px, #f8f4ec 7px 14px); --vault-background-repeat: repeat; }
+:root[data-vault-background="pattern-ondas"], .appearance-swatch[data-background="pattern-ondas"] { --vault-background: repeating-radial-gradient(circle at 0 100%, #b9dbe0 0 2px, #eff8f7 2px 12px); --vault-background-repeat: repeat; }
+:root[data-vault-background="pattern-papel"], .appearance-swatch[data-background="pattern-papel"] { --vault-background: repeating-linear-gradient(0deg, #f3eedf 0 1px, #e7ddc9 1px 2px, #f6f1e6 2px 7px); --vault-background-repeat: repeat; }
+:root[data-vault-background="pattern-trama"], .appearance-swatch[data-background="pattern-trama"] { --vault-background: repeating-linear-gradient(45deg, #e1e7ee 0 1px, transparent 1px 7px), repeating-linear-gradient(-45deg, #e1e7ee 0 1px, #f6f8fb 1px 7px); --vault-background-repeat: repeat, repeat; }
+:root[data-vault-background="pattern-confeti"], .appearance-swatch[data-background="pattern-confeti"] { --vault-background: radial-gradient(#f49aa4 2px, transparent 2.4px), radial-gradient(#6c9fe3 2px, transparent 2.4px), radial-gradient(#f1c668 2px, #f8f2e9 2.4px); --vault-background-size: 26px 26px, 31px 31px, 23px 23px; --vault-background-position: 0 0, 12px 9px, 4px 15px; --vault-background-repeat: repeat, repeat, repeat; }
+:root[data-vault-background="pattern-mosaico"], .appearance-swatch[data-background="pattern-mosaico"] { --vault-background: conic-gradient(from 45deg, #b8d4e8, #f0d7bd, #d0dfc4, #e9bed1, #b8d4e8); --vault-background-size: 28px 28px; --vault-background-repeat: repeat; }
+:root[data-vault-background="pattern-topografia"], .appearance-swatch[data-background="pattern-topografia"] { --vault-background: repeating-radial-gradient(ellipse at 24% 45%, transparent 0 9px, #9bb9a5 10px 11px, transparent 12px 19px), linear-gradient(#dcead9, #dcead9); --vault-background-repeat: repeat, repeat; }
+:root[data-vault-background="pattern-lunares"], .appearance-swatch[data-background="pattern-lunares"] { --vault-background: radial-gradient(#c4a6d8 3px, #f1eafa 3.5px); --vault-background-size: 22px 22px; --vault-background-repeat: repeat; }
+
+:root[data-vault-background="photo-montanas"], .appearance-swatch[data-background="photo-montanas"] { --vault-background: url('assets/backgrounds/montanas-serenas.webp'); }
+:root[data-vault-background="photo-oceano"], .appearance-swatch[data-background="photo-oceano"] { --vault-background: url('assets/backgrounds/oceano-profundo.webp'); }
+:root[data-vault-background="photo-dunas"], .appearance-swatch[data-background="photo-dunas"] { --vault-background: url('assets/backgrounds/dunas-doradas.webp'); }
+:root[data-vault-background="photo-botanicas"], .appearance-swatch[data-background="photo-botanicas"] { --vault-background: url('assets/backgrounds/sombras-botanicas.webp'); }
+:root[data-vault-background="photo-bosque"], .appearance-swatch[data-background="photo-bosque"] { --vault-background: url('assets/backgrounds/bosque-en-niebla.webp'); }
+:root[data-vault-background="photo-cielo"], .appearance-swatch[data-background="photo-cielo"] { --vault-background: url('assets/backgrounds/cielo-nocturno.webp'); }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #75a7ff; outline-offset: 2px; }
@@ -136,6 +193,15 @@ textarea { resize: vertical; }
 .modal::backdrop { background: #11182780; }
 .modal h2 { margin: .2rem 0 .6rem; letter-spacing: -.03em; }
 .modal-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: .2rem; }
+.appearance-modal { width: min(44rem, calc(100% - 1rem)); max-height: min(88vh, 48rem); overflow-y: auto; }
+.appearance-options { display: grid; gap: 1rem; }
+.appearance-group { display: grid; gap: .5rem; }
+.appearance-group h3 { margin: 0; color: #4b5563; font-size: .78rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.appearance-choice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.1rem, 1fr)); gap: .55rem; }
+.appearance-option { display: grid; grid-template-columns: 2.35rem minmax(0, 1fr); align-items: center; gap: .5rem; min-height: 3.25rem; border: 1px solid #cbd2dc; border-radius: .65rem; background: #fff; color: #374151; padding: .35rem; text-align: left; font-size: .74rem; font-weight: 750; line-height: 1.18; }
+.appearance-option:hover { border-color: #94a3b8; background: #f8fafc; }
+.appearance-option.selected { border-color: #1d4ed8; background: #eef4ff; color: #1d4ed8; box-shadow: 0 0 0 2px #2563eb20; }
+.appearance-swatch { display: block; width: 2.35rem; height: 2.35rem; border: 1px solid #1720331a; border-radius: .45rem; background-color: #f6f7f9; background-image: var(--vault-background, linear-gradient(135deg, #f6f7f9, #dfe6ef)); background-position: var(--vault-background-position, center); background-repeat: var(--vault-background-repeat, no-repeat); background-size: var(--vault-background-size, cover); }
 .history-modal { width: min(36rem, calc(100% - 2rem)); }
 .history-list { display: grid; max-height: min(55vh, 30rem); overflow-y: auto; border-top: 1px solid #e1e4e8; }
 .history-item { display: grid; grid-template-columns: .75rem minmax(0, 1fr); gap: .75rem; padding: .9rem .15rem; border-bottom: 1px solid #e8ebef; }
@@ -182,9 +248,14 @@ textarea { resize: vertical; }
 :root[data-theme="dark"] .history-marker { border-color: #75a7ff; background: #1a1f26; box-shadow: 0 0 0 3px #1f3b68; }
 :root[data-theme="dark"] .history-copy strong { color: #edf0f5; }
 :root[data-theme="dark"] .history-copy time, :root[data-theme="dark"] .history-empty { color: #aeb7c4; }
+:root[data-theme="dark"] .appearance-group h3 { color: #aeb7c4; }
+:root[data-theme="dark"] .appearance-option { border-color: #3b4451; background: #11161d; color: #d4dae3; }
+:root[data-theme="dark"] .appearance-option:hover { border-color: #5b6879; background: #272e38; }
+:root[data-theme="dark"] .appearance-option.selected { border-color: #5b8def; background: #192a47; color: #b8d0ff; }
 
 @media (prefers-reduced-motion: reduce) {
   #exportButton.backup-due { animation: none; }
+  :root[data-home-background] body { transition: none; }
 }
 
 @media (max-width: 760px) {
@@ -214,6 +285,7 @@ textarea { resize: vertical; }
   .card-button.copy-button { grid-column: 1 / -1; width: 100%; }
   .modal-actions { flex-direction: column-reverse; }
   .modal-actions .button { width: 100%; }
+  .appearance-choice-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {

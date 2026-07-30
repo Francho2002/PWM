@@ -17,6 +17,53 @@ const USB_KEY_MAX_BYTES = 16 * 1024;
 const DEK_BYTES = 32;
 const GENERATED_PASSWORD_LENGTH = 20;
 const HISTORY_LIMIT = 200;
+const HOME_BACKGROUND_INTERVAL_MS = 10_000;
+const HOME_BACKGROUNDS = Object.freeze([
+  'home-niebla',
+  'home-papel',
+  'home-salvia',
+  'home-arena',
+  'home-cielo',
+  'home-pizarra',
+]);
+const APPEARANCE_PRESETS = Object.freeze([
+  { id: 'default', name: 'Predeterminado', group: 'Colores' },
+  { id: 'color-niebla', name: 'Niebla', group: 'Colores' },
+  { id: 'color-cielo', name: 'Cielo', group: 'Colores' },
+  { id: 'color-salvia', name: 'Salvia', group: 'Colores' },
+  { id: 'color-lavanda', name: 'Lavanda', group: 'Colores' },
+  { id: 'color-arena', name: 'Arena', group: 'Colores' },
+  { id: 'color-rosa', name: 'Rosa tenue', group: 'Colores' },
+  { id: 'color-pizarra', name: 'Pizarra', group: 'Colores' },
+  { id: 'color-grafito', name: 'Grafito', group: 'Colores' },
+  { id: 'gradient-aurora', name: 'Aurora', group: 'Gradientes' },
+  { id: 'gradient-brisa', name: 'Brisa marina', group: 'Gradientes' },
+  { id: 'gradient-crepusculo', name: 'Crepúsculo', group: 'Gradientes' },
+  { id: 'gradient-bosque', name: 'Bosque suave', group: 'Gradientes' },
+  { id: 'gradient-lila', name: 'Lila', group: 'Gradientes' },
+  { id: 'gradient-coral', name: 'Coral', group: 'Gradientes' },
+  { id: 'gradient-nocturno', name: 'Noche azul', group: 'Gradientes' },
+  { id: 'gradient-amanecer', name: 'Amanecer', group: 'Gradientes' },
+  { id: 'gradient-menta', name: 'Menta', group: 'Gradientes' },
+  { id: 'gradient-tinta', name: 'Tinta', group: 'Gradientes' },
+  { id: 'pattern-cuadricula', name: 'Cuadrícula', group: 'Patrones' },
+  { id: 'pattern-puntos', name: 'Puntos', group: 'Patrones' },
+  { id: 'pattern-lineas', name: 'Líneas', group: 'Patrones' },
+  { id: 'pattern-ondas', name: 'Ondas', group: 'Patrones' },
+  { id: 'pattern-papel', name: 'Papel', group: 'Patrones' },
+  { id: 'pattern-trama', name: 'Trama', group: 'Patrones' },
+  { id: 'pattern-confeti', name: 'Confeti', group: 'Patrones' },
+  { id: 'pattern-mosaico', name: 'Mosaico', group: 'Patrones' },
+  { id: 'pattern-topografia', name: 'Topografía', group: 'Patrones' },
+  { id: 'pattern-lunares', name: 'Lunares', group: 'Patrones' },
+  { id: 'photo-montanas', name: 'Montañas serenas', group: 'Fotos' },
+  { id: 'photo-oceano', name: 'Océano profundo', group: 'Fotos' },
+  { id: 'photo-dunas', name: 'Dunas doradas', group: 'Fotos' },
+  { id: 'photo-botanicas', name: 'Sombras botánicas', group: 'Fotos' },
+  { id: 'photo-bosque', name: 'Bosque en niebla', group: 'Fotos' },
+  { id: 'photo-cielo', name: 'Cielo nocturno', group: 'Fotos' },
+]);
+const APPEARANCE_PRESET_IDS = new Set(APPEARANCE_PRESETS.map((preset) => preset.id));
 const HISTORY_TYPES = new Set([
   'vault-created',
   'vault-migrated',
@@ -61,6 +108,10 @@ const state = {
   keyBytes: null,
   entries: [],
   history: [],
+  appearance: { version: 1, background: 'default' },
+  appearanceDraft: null,
+  homeBackground: null,
+  homeBackgroundTimer: null,
   record: null,
   vaultId: null,
   vaultName: '',
@@ -110,10 +161,152 @@ function toggleTheme() {
   applyTheme(nextTheme);
 }
 
+function normalizeAppearance(appearance) {
+  const background = appearance && typeof appearance === 'object' && APPEARANCE_PRESET_IDS.has(appearance.background)
+    ? appearance.background
+    : 'default';
+  return { version: 1, background };
+}
+
+function applyVaultBackground(appearance = state.appearance) {
+  const background = normalizeAppearance(appearance).background;
+  if (background === 'default') {
+    delete document.documentElement.dataset.vaultBackground;
+    return;
+  }
+  document.documentElement.dataset.vaultBackground = background;
+}
+
+function clearVaultBackground() {
+  delete document.documentElement.dataset.vaultBackground;
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function nextHomeBackground() {
+  const choices = HOME_BACKGROUNDS.filter((background) => background !== state.homeBackground);
+  return choices[Math.floor(Math.random() * choices.length)] || HOME_BACKGROUNDS[0];
+}
+
+function applyHomeBackground(background) {
+  if (!HOME_BACKGROUNDS.includes(background)) return;
+  state.homeBackground = background;
+  document.documentElement.dataset.homeBackground = background;
+}
+
+function startHomeBackgroundRotation() {
+  if (state.homeBackgroundTimer) return;
+  applyHomeBackground(nextHomeBackground());
+  if (prefersReducedMotion()) return;
+  state.homeBackgroundTimer = window.setInterval(() => {
+    applyHomeBackground(nextHomeBackground());
+  }, HOME_BACKGROUND_INTERVAL_MS);
+}
+
+function stopHomeBackgroundRotation() {
+  window.clearInterval(state.homeBackgroundTimer);
+  state.homeBackgroundTimer = null;
+  delete document.documentElement.dataset.homeBackground;
+}
+
+function renderAppearanceOptions() {
+  const container = $('appearanceOptions');
+  emptyElement(container);
+  const groups = [...new Set(APPEARANCE_PRESETS.map((preset) => preset.group))];
+  groups.forEach((group) => {
+    const section = document.createElement('section');
+    section.className = 'appearance-group';
+    const title = document.createElement('h3');
+    title.textContent = group;
+    const choices = document.createElement('div');
+    choices.className = 'appearance-choice-grid';
+    APPEARANCE_PRESETS.filter((preset) => preset.group === group).forEach((preset) => {
+      const button = document.createElement('button');
+      button.className = 'appearance-option';
+      button.type = 'button';
+      button.dataset.background = preset.id;
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', 'false');
+      button.innerHTML = `<span class="appearance-swatch" data-background="${preset.id}" aria-hidden="true"></span><span>${preset.name}</span>`;
+      choices.append(button);
+    });
+    section.append(title, choices);
+    container.append(section);
+  });
+}
+
+function setAppearanceSelection(background) {
+  const safeBackground = APPEARANCE_PRESET_IDS.has(background) ? background : 'default';
+  state.appearanceDraft = { version: 1, background: safeBackground };
+  $('appearanceOptions').querySelectorAll('.appearance-option').forEach((button) => {
+    const selected = button.dataset.background === safeBackground;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-checked', String(selected));
+  });
+  applyVaultBackground(state.appearanceDraft);
+}
+
+function openAppearanceDialog() {
+  if (!state.key || !state.vaultId) return;
+  state.appearanceDraft = normalizeAppearance(state.appearance);
+  renderAppearanceOptions();
+  setAppearanceSelection(state.appearanceDraft.background);
+  $('appearanceDialog').showModal();
+  $('appearanceOptions').querySelector('.appearance-option.selected')?.focus();
+  resetAutoLock();
+}
+
+function closeAppearanceDialog(restore = true) {
+  if (restore) applyVaultBackground(state.appearance);
+  state.appearanceDraft = null;
+  if ($('appearanceDialog').open) $('appearanceDialog').close();
+}
+
+async function saveAppearance() {
+  if (!state.key || !state.record || state.record.version !== 2 || !state.vaultId) {
+    throw new Error('Bóveda bloqueada');
+  }
+  const encrypted = await encryptPayloadV2(state.key, {
+    entries: state.entries,
+    history: state.history,
+    appearance: state.appearance,
+  });
+  const record = { ...state.record, ...encrypted, updatedAt: new Date().toISOString() };
+  await writeValues([[vaultRecordKey(state.vaultId), record]]);
+  state.record = record;
+}
+
+async function applyAppearance() {
+  const previous = state.appearance;
+  const next = normalizeAppearance(state.appearanceDraft);
+  state.appearance = next;
+  applyVaultBackground(next);
+  $('applyAppearanceButton').disabled = true;
+  try {
+    await saveAppearance();
+    closeAppearanceDialog(false);
+    showNotice('Apariencia guardada para esta bóveda.');
+  } catch (_) {
+    state.appearance = previous;
+    applyVaultBackground(previous);
+    showNotice('No se pudo guardar la apariencia.', 'error');
+  } finally {
+    $('applyAppearanceButton').disabled = false;
+  }
+}
+
 function setScreen(name) {
   $('setupScreen').classList.toggle('hidden', name !== 'setup');
   $('unlockScreen').classList.toggle('hidden', name !== 'unlock');
   $('vaultScreen').classList.toggle('hidden', name !== 'vault');
+  $('appearanceButton').classList.toggle('hidden', name !== 'vault' || !state.key);
+  if (name === 'vault') stopHomeBackgroundRotation();
+  else {
+    clearVaultBackground();
+    startHomeBackgroundRotation();
+  }
   if (name === 'vault') $('currentVaultName').textContent = state.vaultName;
   updateBackupReminder();
 }
@@ -777,6 +970,7 @@ async function saveVault(backupReason = 'credentials', historyEvent = null) {
   const encrypted = await encryptPayloadV2(state.key, {
     entries: state.entries,
     history: nextHistory,
+    appearance: state.appearance,
   });
   const updatedAt = new Date().toISOString();
   const nextRecord = { ...state.record, ...encrypted, updatedAt };
@@ -1117,6 +1311,7 @@ async function createVault(event) {
     const created = await createV2Record(master, {
       entries: [],
       history: initialHistory,
+      appearance: { version: 1, background: 'default' },
     }, createdAt);
     const { record, key, keyBytes } = created;
     pendingKeyBytes = keyBytes;
@@ -1148,6 +1343,7 @@ async function createVault(event) {
     pendingKeyBytes = null;
     state.entries = [];
     state.history = initialHistory;
+    state.appearance = { version: 1, background: 'default' };
     state.record = record;
     state.vaultId = vaultId;
     state.vaultName = vaultName;
@@ -1190,6 +1386,7 @@ async function unlockVault(event) {
           payload.history,
           createHistoryEvent('vault-migrated'),
         ),
+        appearance: normalizeAppearance(payload.appearance),
       };
       const next = await createV2Record(master, payload, record.createdAt || new Date().toISOString());
       record = next.record;
@@ -1228,6 +1425,7 @@ function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payloa
   state.keyBytes = keyBytes;
   state.entries = payload.entries.map(normalizeEntry);
   state.history = normalizeHistory(payload.history);
+  state.appearance = normalizeAppearance(payload.appearance);
   state.record = record;
   state.vaultId = vaultId;
   state.vaultName = vaultName;
@@ -1236,6 +1434,7 @@ function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payloa
   setMasterUnlockExpanded(false);
   clearEditor();
   setScreen('vault');
+  applyVaultBackground(state.appearance);
   renderEntries();
   resetAutoLock();
 }
@@ -1328,6 +1527,7 @@ function lockVault(expired = false) {
     $('deleteVaultDialog').close();
   }
   if ($('pendingBackupDialog').open) closePendingBackupDialog();
+  if ($('appearanceDialog').open) closeAppearanceDialog(false);
   if ($('historyDialog').open) $('historyDialog').close();
   clearVaultDom();
   state.key = null;
@@ -1335,6 +1535,9 @@ function lockVault(expired = false) {
   state.keyBytes = null;
   state.entries = [];
   state.history = [];
+  state.appearance = { version: 1, background: 'default' };
+  state.appearanceDraft = null;
+  clearVaultBackground();
   state.record = null;
   state.vaultId = null;
   state.vaultName = '';
@@ -1625,6 +1828,7 @@ async function persistCurrentRecord(nextRecord, metadataUpdates = {}, historyEve
   const encrypted = await encryptPayloadV2(state.key, {
     entries: state.entries,
     history: nextHistory,
+    appearance: state.appearance,
   });
   const updatedAt = new Date().toISOString();
   const record = { ...nextRecord, ...encrypted, updatedAt };
@@ -1814,6 +2018,7 @@ async function changeMasterPassword(event) {
     const encrypted = await encryptPayloadV2(state.key, {
       entries: state.entries,
       history: nextHistory,
+      appearance: state.appearance,
     });
     const updatedAt = new Date().toISOString();
     const nextRecord = {
@@ -1854,6 +2059,32 @@ async function start() {
   $('changeMasterForm').addEventListener('submit', changeMasterPassword);
   $('usbKeyForm').addEventListener('submit', createOrReplaceUsbKey);
   $('themeToggle').addEventListener('click', toggleTheme);
+  $('appearanceButton').addEventListener('click', openAppearanceDialog);
+  $('appearanceOptions').addEventListener('click', (event) => {
+    const option = event.target.closest('.appearance-option');
+    if (option) setAppearanceSelection(option.dataset.background);
+  });
+  $('appearanceOptions').addEventListener('keydown', (event) => {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const options = [...$('appearanceOptions').querySelectorAll('.appearance-option')];
+    const currentIndex = options.indexOf(event.target.closest('.appearance-option'));
+    if (currentIndex < 0) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : (currentIndex + (['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1) + options.length) % options.length;
+    const next = options[nextIndex];
+    setAppearanceSelection(next.dataset.background);
+    next.focus();
+  });
+  $('cancelAppearanceButton').addEventListener('click', () => closeAppearanceDialog());
+  $('applyAppearanceButton').addEventListener('click', applyAppearance);
+  $('appearanceDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeAppearanceDialog();
+  });
 
   $('generateButton').addEventListener('click', () => {
     const groups = selectedPasswordGroups();

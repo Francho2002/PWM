@@ -31,6 +31,12 @@ Desde una bóveda abierta también podés elegir **Borrar bóveda**. La eliminac
 
 PWM no guarda en el historial las contraseñas, los nombres de usuario ni acciones como copiar, mostrar, desbloquear o exportar. Se conservan los últimos 200 movimientos para evitar que la bóveda crezca indefinidamente. Las bóvedas creadas con versiones anteriores comienzan con un historial vacío y registran los cambios nuevos.
 
+### Apariencia de la bóveda
+
+Con una bóveda abierta, **Personalizar** permite elegir entre colores, gradientes, patrones y fondos fotográficos locales. La elección es exclusiva de esa bóveda y se cifra dentro de ella: se conserva al cambiar de dispositivo mediante una exportación e importación posteriores. Cambiar el fondo no modifica credenciales ni activa el aviso urgente de respaldo.
+
+Las pantallas de inicio y desbloqueo usan fondos neutros locales que rotan aproximadamente cada diez segundos. No se guardan ni pertenecen a ninguna bóveda; al abrir una se reemplazan por su apariencia cifrada. Si el dispositivo solicita reducir movimiento, se muestra un único fondo sin rotación.
+
 ## Protección aplicada
 
 - El contenido se guarda cifrado en IndexedDB, no en texto plano.
@@ -42,6 +48,7 @@ PWM no guarda en el historial las contraseñas, los nombres de usuario ni accion
 - Las contraseñas generadas usan `crypto.getRandomValues`.
 - La clave maestra puede cambiarse desde una bóveda desbloqueada.
 - Las copias exportadas permanecen cifradas y conservan el nombre de la bóveda.
+- La apariencia elegida de cada bóveda se cifra con el resto de su contenido y se incluye en las exportaciones.
 - Cada bóveda tiene un identificador persistente para impedir que una misma exportación se importe varias veces.
 
 ## Límites importantes

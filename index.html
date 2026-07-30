@@ -44,6 +44,10 @@
       <path d="M12 3 21 20H3L12 3Z"></path>
       <path d="M12 9v5m0 3h.01"></path>
     </symbol>
+    <symbol id="icon-palette" viewBox="0 0 24 24">
+      <path d="M12 3a9 9 0 1 0 0 18h1.2a1.8 1.8 0 0 0 0-3.6h-.7a1.5 1.5 0 0 1 0-3h1.8A4.7 4.7 0 0 0 19 9.7 6.7 6.7 0 0 0 12 3Z"></path>
+      <path d="M7.5 10.5h.01M10 7.5h.01M14 7.5h.01M16.5 10.5h.01"></path>
+    </symbol>
   </svg>
   <main class="app-shell">
     <header class="app-header">
@@ -55,6 +59,10 @@
         </span>
       </a>
       <div class="header-actions">
+        <button id="appearanceButton" class="theme-toggle hidden" type="button" aria-label="Personalizar bóveda" aria-haspopup="dialog" aria-controls="appearanceDialog">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-palette"></use></svg>
+          <span>Personalizar</span>
+        </button>
         <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false">
           <span id="themeIcon" aria-hidden="true">☾</span>
           <span id="themeToggleLabel">Modo oscuro</span>
@@ -303,6 +311,21 @@
         <div class="modal-actions">
           <button id="continueWithoutBackupButton" class="button secondary" type="button">Continuar sin copia</button>
           <button id="exportThenContinueButton" class="button primary" type="button">Exportar ahora</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="appearanceDialog" class="modal appearance-modal" aria-labelledby="appearanceTitle">
+      <div class="stack">
+        <div>
+          <p class="eyebrow">Apariencia cifrada</p>
+          <h2 id="appearanceTitle">Personalizá tu bóveda</h2>
+          <p class="helper">Elegí un fondo para esta bóveda. Se guarda cifrado y viaja con tu exportación.</p>
+        </div>
+        <div id="appearanceOptions" class="appearance-options" role="radiogroup" aria-label="Fondos disponibles"></div>
+        <div class="modal-actions">
+          <button id="cancelAppearanceButton" class="button secondary" type="button">Cancelar</button>
+          <button id="applyAppearanceButton" class="button primary" type="button">Aplicar</button>
         </div>
       </div>
     </dialog>
