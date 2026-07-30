@@ -113,9 +113,11 @@
             </div>
             <input id="vaultSelect" type="hidden">
           </div>
-          <button id="unlockUsbKeyButton" class="button primary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Importar llave</button>
-          <p id="unlockUsbKeyHelper" class="helper">Elegí el archivo llave desde tu pendrive. PWM encontrará automáticamente su bóveda.</p>
-          <button id="toggleMasterUnlock" class="text-button icon-text-button master-unlock-toggle" type="button" aria-expanded="false" aria-controls="masterUnlockFields"><svg class="button-icon" aria-hidden="true"><use href="#icon-key"></use></svg><span id="masterUnlockToggleText">Usar clave maestra</span></button>
+          <div id="unlockUsbOption" class="unlock-usb-option">
+            <button id="unlockUsbKeyButton" class="button primary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Importar llave</button>
+            <p id="unlockUsbKeyHelper" class="helper">Elegí el archivo llave desde tu pendrive. PWM encontrará automáticamente su bóveda.</p>
+          </div>
+          <button id="toggleMasterUnlock" class="button secondary master-unlock-toggle" type="button" aria-expanded="false" aria-controls="masterUnlockFields"><svg class="button-icon" aria-hidden="true"><use href="#icon-key"></use></svg><span id="masterUnlockToggleText">Usar clave maestra</span></button>
           <div id="masterUnlockFields" class="stack master-unlock-fields hidden">
             <label>
               <span>Clave maestra</span>

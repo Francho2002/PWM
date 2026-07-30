@@ -62,9 +62,12 @@ textarea { resize: vertical; }
 .danger-quiet { border: 0; background: transparent; color: #a1312d; font-weight: 750; padding: .65rem .3rem; }
 .text-button { width: fit-content; border: 0; background: transparent; color: #1d4ed8; padding: .4rem 0; font-size: .84rem; font-weight: 700; text-decoration: underline; text-underline-offset: .16rem; }
 .icon-text-button { display: inline-flex; align-items: center; gap: .35rem; }
-.lock-secondary-actions { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; }
-.master-unlock-toggle { margin-top: -.2rem; }
-.master-unlock-fields { padding-top: .1rem; }
+.lock-secondary-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: .45rem 1.15rem; margin-top: 1rem; border-top: 1px solid #e5e7eb; padding-top: .8rem; }
+.unlock-usb-option { display: grid; gap: .55rem; border: 1px solid #dbe5f7; border-radius: .75rem; background: #f7faff; padding: .7rem; }
+.unlock-usb-option .button { width: 100%; }
+.unlock-usb-option .helper { margin: 0; padding: 0 .05rem; }
+.master-unlock-toggle { width: 100%; text-decoration: none; }
+.master-unlock-fields { border-top: 1px solid #e5e7eb; padding-top: 1rem; }
 .import-prompt { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-top: .15rem; padding-top: .9rem; border-top: 1px solid #e5e7eb; color: #667085; font-size: .82rem; }
 .import-prompt .text-button { flex-shrink: 0; }
 .vault-picker { position: relative; }
@@ -168,6 +171,8 @@ textarea { resize: vertical; }
 :root[data-theme="dark"] .copy-button.card-button:hover { background: #1d4ed8; }
 :root[data-theme="dark"] .copy-button.card-button.copied { border-color: #23884e; background: #19723f; }
 :root[data-theme="dark"] .import-prompt { border-color: #343b45; }
+:root[data-theme="dark"] .lock-secondary-actions, :root[data-theme="dark"] .master-unlock-fields { border-color: #343b45; }
+:root[data-theme="dark"] .unlock-usb-option { border-color: #29466f; background: #142238; }
 :root[data-theme="dark"] .vault-select-button, :root[data-theme="dark"] .vault-select-list { border-color: #3b4451; background: #11161d; color: #f0f3f7; }
 :root[data-theme="dark"] .vault-select-button:hover { border-color: #5b6879; background: #1a212b; }
 :root[data-theme="dark"] .vault-select-option { color: #d4dae3; }

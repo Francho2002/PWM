@@ -640,7 +640,9 @@ function renderVaultSelect(preferredVaultId = state.index.activeVaultId) {
 function refreshUsbUnlockAvailability() {
   const button = $('unlockUsbKeyButton');
   const helper = $('unlockUsbKeyHelper');
+  const option = $('unlockUsbOption');
   const available = state.index.vaults.length > 0;
+  option.classList.toggle('hidden', !available);
   button.classList.toggle('hidden', !available);
   helper.classList.toggle('hidden', !available);
 }
