@@ -3108,7 +3108,9 @@ async function activatePendingUsbKey() {
   );
   const version = pending.usbKeyVersion;
   clearPendingUsbKey();
-  closeUsbKeyDialog(false, true);
+  // La activación ocurre mientras el diálogo está ocupado. Forzamos sólo este
+  // cierre interno una vez que la escritura cifrada ya terminó con éxito.
+  closeUsbKeyDialog(false, true, true);
   showNotice(`Llave v${version} activada. Es necesario exportar la bóveda a tu USB ahora: sin una copia nueva, esta llave no abrirá tus respaldos.`);
 }
 
@@ -3193,8 +3195,8 @@ function openUsbKeyDialog() {
   resetAutoLock();
 }
 
-function closeUsbKeyDialog(discardPending = true, silent = false) {
-  if (state.usbKeyBusy) return;
+function closeUsbKeyDialog(discardPending = true, silent = false, force = false) {
+  if (state.usbKeyBusy && !force) return;
   const hadPending = Boolean(state.pendingUsbKey);
   const hadPreviousKey = validUsbUnlock(state.record?.usbUnlock);
   if (discardPending) clearPendingUsbKey();
