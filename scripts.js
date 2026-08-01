@@ -2616,22 +2616,45 @@ function canUseDirectoryPicker() {
 }
 
 function existingFileError(fileName, existingFileDescription) {
-  const error = new Error(`“${fileName}” ya existe. NO se reemplazó ${existingFileDescription}. Elegí otra carpeta para guardarlo.`);
+  const error = new Error(`“${fileName}” ya existe. NO se reemplazó ${existingFileDescription}. Revisá ese archivo y volvé a intentarlo.`);
   error.name = 'ExistingFileError';
   return error;
 }
 
-async function newFileHandleInDirectory(directoryHandle, fileName, existingFileDescription) {
+async function fileMatchesExpectedText(file, expectedText) {
+  if (file.size !== new Blob([expectedText]).size) return false;
+  return (await file.text()) === expectedText;
+}
+
+async function newFileHandleInDirectory(
+  directoryHandle,
+  fileName,
+  existingFileDescription,
+  {
+    allowEmptyExisting = false,
+    validateExisting = null,
+  } = {},
+) {
   try {
-    await directoryHandle.getFileHandle(fileName, { create: false });
+    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: false });
+    const existingFile = await fileHandle.getFile();
+    if (allowEmptyExisting && existingFile.size === 0) {
+      return { fileHandle, alreadySaved: false };
+    }
+    if (validateExisting && await validateExisting(existingFile)) {
+      return { fileHandle, alreadySaved: true };
+    }
   } catch (error) {
     if (error?.name === 'NotFoundError') {
       const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
       const existingFile = await fileHandle.getFile();
       if (existingFile.size > 0) {
+        if (validateExisting && await validateExisting(existingFile)) {
+          return { fileHandle, alreadySaved: true };
+        }
         throw existingFileError(fileName, existingFileDescription);
       }
-      return fileHandle;
+      return { fileHandle, alreadySaved: false };
     }
     throw error;
   }
@@ -2652,25 +2675,40 @@ function triggerTextDownload(text, fileName) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-async function saveNewTextInDirectory(text, fileName, { pickerId, existingFileDescription }) {
+async function saveNewTextInDirectory(text, fileName, {
+  pickerId,
+  existingFileDescription,
+  prepareDirectory = null,
+  allowEmptyExisting = false,
+  validateExisting = null,
+}) {
   let writable = null;
   try {
     const directoryHandle = await window.showDirectoryPicker({
       id: pickerId,
       mode: 'readwrite',
     });
-    const fileHandle = await newFileHandleInDirectory(
+    const prepared = prepareDirectory ? await prepareDirectory(directoryHandle) : null;
+    const { fileHandle, alreadySaved } = await newFileHandleInDirectory(
       directoryHandle,
       fileName,
       existingFileDescription,
+      { allowEmptyExisting, validateExisting },
     );
-    writable = await fileHandle.createWritable();
-    await writable.write(text);
-    await writable.close();
-    writable = null;
+    if (!alreadySaved) {
+      writable = await fileHandle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      writable = null;
+    }
     const savedFile = await fileHandle.getFile();
-    if (await savedFile.text() !== text) throw new Error('El archivo guardado no pudo comprobarse.');
-    return { saved: true };
+    const verified = alreadySaved && validateExisting
+      ? await validateExisting(savedFile)
+      : await fileMatchesExpectedText(savedFile, text);
+    if (!verified) {
+      throw new Error('El archivo guardado no pudo comprobarse.');
+    }
+    return { saved: true, alreadySaved, directoryHandle, prepared };
   } catch (error) {
     if (writable) {
       try {
@@ -2695,10 +2733,108 @@ function saveNewUsbKeyInDirectory(text, fileName) {
   });
 }
 
-function saveNewBackupInDirectory(text, fileName) {
+async function validatePreviousBackupFile(file, pending) {
+  if (file.size <= 0 || file.size > BACKUP_MAX_BYTES) {
+    throw new Error(`La copia anterior “${file.name}” no tiene un tamaño válido.`);
+  }
+
+  const text = await file.text();
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (_) {
+    throw new Error(`La copia anterior “${file.name}” no es un JSON válido.`);
+  }
+
+  const hasValidRecord = validateVaultRecord(value?.vault);
+  const currentRecord = JSON.parse(pending.recordSnapshot);
+  const validIdentity = hasValidRecord && (
+    value.version === 3
+      ? value.vaultUid === pending.vaultUid
+      : value.version === 2
+        && await vaultIdentityFingerprint(value.vault) === await vaultIdentityFingerprint(currentRecord)
+  );
+
+  if (
+    !value
+    || value.format !== 'pwm-vault-backup'
+    || (value.version !== 2 && value.version !== 3)
+    || !validIdentity
+    || value.backupVersion !== pending.previousBackupVersion
+    || !hasValidRecord
+  ) {
+    throw new Error(`La copia anterior “${file.name}” no es el respaldo PWM v${pending.previousBackupVersion} válido de esta bóveda.`);
+  }
+
+  return { text };
+}
+
+async function isPreparedBackupFile(file, pending) {
+  if (file.size <= 0 || file.size > BACKUP_MAX_BYTES) return false;
+
+  let value;
+  let expected;
+  try {
+    value = JSON.parse(await file.text());
+    expected = JSON.parse(pending.text);
+  } catch (_) {
+    return false;
+  }
+
+  return Boolean(
+    value
+    && value.format === 'pwm-vault-backup'
+    && value.version === 3
+    && value.vaultUid === pending.vaultUid
+    && value.backupVersion === pending.backupVersion
+    && value.usbKeyVersion === expected.usbKeyVersion
+    && value.name === expected.name
+    && validateVaultRecord(value.vault)
+    && JSON.stringify(value.vault) === pending.recordSnapshot
+  );
+}
+
+async function findValidatedPreviousBackup(directoryHandle, pending) {
+  if (!pending.previousFileName) return null;
+
+  try {
+    const fileHandle = await directoryHandle.getFileHandle(pending.previousFileName, { create: false });
+    const validated = await validatePreviousBackupFile(await fileHandle.getFile(), pending);
+    return { fileName: pending.previousFileName, ...validated };
+  } catch (error) {
+    if (error?.name === 'NotFoundError') {
+      throw new Error(`No encontré “${pending.previousFileName}” en esta carpeta. Elegí la carpeta donde está la copia v${pending.previousBackupVersion}.`);
+    }
+    throw error;
+  }
+}
+
+async function removeValidatedPreviousBackup(directoryHandle, pending, previousBackup) {
+  if (!previousBackup?.fileName) return { removed: false, status: 'none' };
+
+  try {
+    // Revalidamos justo antes de borrar para no eliminar un archivo que haya cambiado durante la exportación.
+    const fileHandle = await directoryHandle.getFileHandle(previousBackup.fileName, { create: false });
+    const currentFile = await fileHandle.getFile();
+    const currentBackup = await validatePreviousBackupFile(currentFile, pending);
+    if (currentBackup.text !== previousBackup.text) {
+      throw new Error('La copia anterior cambió durante la exportación.');
+    }
+    await directoryHandle.removeEntry(previousBackup.fileName);
+    return { removed: true, status: 'removed' };
+  } catch (error) {
+    if (error?.name === 'NotFoundError') return { removed: false, status: 'missing' };
+    return { removed: false, status: 'error', error };
+  }
+}
+
+function saveNewBackupInDirectory(text, fileName, pending) {
   return saveNewTextInDirectory(text, fileName, {
     pickerId: 'pwm-vault-backups',
     existingFileDescription: 'una copia cifrada anterior',
+    prepareDirectory: (directoryHandle) => findValidatedPreviousBackup(directoryHandle, pending),
+    allowEmptyExisting: true,
+    validateExisting: (file) => isPreparedBackupFile(file, pending),
   });
 }
 
@@ -2737,6 +2873,9 @@ function prepareBackupExport() {
     recordSnapshot: vaultRecordSnapshot(state.record),
     text: JSON.stringify(backup, null, 2),
     fileName: `${safeFileName(state.vaultName)}-boveda-v${backupVersion}.pwm.json`,
+    previousFileName: metadata.backupVersion > 0
+      ? `${safeFileName(state.vaultName)}-boveda-v${metadata.backupVersion}.pwm.json`
+      : null,
   };
 }
 
@@ -2840,9 +2979,28 @@ async function downloadBackup() {
   button.disabled = true;
   try {
     if (canUseDirectoryPicker()) {
-      const result = await saveNewBackupInDirectory(pending.text, pending.fileName);
+      const result = await saveNewBackupInDirectory(pending.text, pending.fileName, pending);
       if (result.saved) {
         await completeBackupExport(pending);
+        const removedPrevious = await removeValidatedPreviousBackup(
+          result.directoryHandle,
+          pending,
+          result.prepared,
+        );
+        if (removedPrevious.removed) {
+          showNotice(
+            `Copia cifrada v${pending.backupVersion} guardada y comprobada. Se retiró la copia anterior v${pending.previousBackupVersion}.`,
+          );
+        } else if (removedPrevious.status === 'missing') {
+          showNotice(
+            `La copia v${pending.backupVersion} fue guardada y comprobada. No encontré la copia anterior v${pending.previousBackupVersion}, así que no se eliminó nada.`,
+          );
+        } else if (removedPrevious.error) {
+          showNotice(
+            `La copia v${pending.backupVersion} fue guardada y comprobada. Conservé la copia anterior porque no pude borrarla automáticamente: ${removedPrevious.error.message || 'error desconocido'}.`,
+            'error',
+          );
+        }
         return true;
       }
       if (result.existingFile) {
