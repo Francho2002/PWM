@@ -2362,10 +2362,28 @@ async function readUsbKeyFile(file) {
   return validateUsbKeyFile(parsed);
 }
 
+function usbKeyVaultMismatchError(selectedVaultName, actualVaultName = '') {
+  const detail = actualVaultName
+    ? ` Esa llave pertenece a “${actualVaultName}”.`
+    : ' Ese archivo no corresponde a ninguna bóveda guardada en este navegador.';
+  const error = new Error(
+    `Esa no es la llave de la bóveda “${selectedVaultName}”.${detail} Elegí la llave correcta antes de desbloquear.`,
+  );
+  error.name = 'UsbKeyVaultMismatchError';
+  return error;
+}
+
 async function unlockWithUsbKey(event) {
   const [file] = event.target.files;
   event.target.value = '';
   if (!file) return;
+
+  const selectedVaultId = $('vaultSelect').value;
+  const selectedVault = state.index.vaults.find((vault) => vault.id === selectedVaultId);
+  if (!selectedVault) {
+    showNotice('Elegí una bóveda antes de importar su llave.', 'error');
+    return;
+  }
 
   let usbKey;
   let pendingKeyBytes;
@@ -2391,10 +2409,13 @@ async function unlockWithUsbKey(event) {
       }
     }
 
-    if (!matches.length) throw new Error('El archivo llave no corresponde a ninguna bóveda de este navegador.');
+    if (!matches.length) throw usbKeyVaultMismatchError(selectedVault.name);
     if (matches.length > 1) throw new Error('El archivo llave coincide con varias bóvedas duplicadas.');
 
     const [{ metadata, record }] = matches;
+    if (metadata.id !== selectedVaultId) {
+      throw usbKeyVaultMismatchError(selectedVault.name, metadata.name);
+    }
     const vaultId = metadata.id;
     access.vaultId = vaultId;
     access.temporary = false;
@@ -2415,13 +2436,12 @@ async function unlockWithUsbKey(event) {
     if (state.vaultAccess === access) await releaseVaultAccess();
     pendingKeyBytes?.fill(0);
     const knownMessages = [
-      'El archivo llave no corresponde a ninguna bóveda de este navegador.',
       'El archivo llave coincide con varias bóvedas duplicadas.',
       'Esta bóveda ya está abierta en otra pestaña. Bloqueala allí antes de continuar.',
       VAULT_AS_KEY_MESSAGE,
     ];
     showNotice(
-      knownMessages.includes(error.message)
+      error.name === 'UsbKeyVaultMismatchError' || knownMessages.includes(error.message)
         ? error.message
         : 'El archivo llave no corresponde o la bóveda está dañada.',
       'error',

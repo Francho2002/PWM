@@ -17,7 +17,7 @@ Si intentás cerrar, recargar o salir del sitio con una copia pendiente, el nave
 
 ### Archivo llave en pendrive (opcional)
 
-Desde una bóveda abierta, elegí **Archivo llave USB** e ingresá la clave maestra actual. PWM prepara un pequeño archivo JSON numerado, por ejemplo `personal-llave-v1.json`, `personal-llave-v2.json`, etc., para guardar en tu pendrive. La llave nueva no se activa todavía: primero debe guardarse y comprobarse. Si cancelás, se bloquea la página o falla la escritura, la llave anterior sigue activa y la nueva no sirve. Luego, en la pantalla bloqueada, elegí **Importar llave**: PWM encontrará y abrirá automáticamente la bóveda vinculada con ese archivo.
+Desde una bóveda abierta, elegí **Archivo llave USB** e ingresá la clave maestra actual. PWM prepara un pequeño archivo JSON numerado, por ejemplo `personal-llave-v1.json`, `personal-llave-v2.json`, etc., para guardar en tu pendrive. La llave nueva no se activa todavía: primero debe guardarse y comprobarse. Si cancelás, se bloquea la página o falla la escritura, la llave anterior sigue activa y la nueva no sirve. Luego, en la pantalla bloqueada, seleccioná la bóveda y elegí **Importar llave**. PWM sólo la abrirá si el archivo pertenece exactamente a la bóveda seleccionada; una llave de otra bóveda se rechaza y se identifica claramente.
 
 La clave maestra sigue siendo el método de respaldo y también se pide para crear, reemplazar o desactivar un archivo llave. **No guardes el archivo llave junto con una copia cifrada de la bóveda:** quien tenga ambos podrá abrirla. El archivo llave no contiene la clave maestra, pero funciona como una llave de posesión y se puede copiar.
 
