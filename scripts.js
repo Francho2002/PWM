@@ -85,6 +85,8 @@ const HISTORY_TYPES = new Set([
   'credential-created',
   'credential-updated',
   'credential-deleted',
+  'credential-favorited',
+  'credential-unfavorited',
   'master-password-changed',
   'usb-key-created',
   'usb-key-disabled',
@@ -102,6 +104,10 @@ const BACKUP_REMINDERS = Object.freeze({
   credentials: {
     title: 'Copia urgente requerida',
     text: 'Cambiaste contraseñas. Exportá la bóveda y guardá la copia nueva en tu USB ahora. Si perdés este navegador antes, podrías perder credenciales recientes.',
+  },
+  favorites: {
+    title: 'Copia urgente requerida',
+    text: 'Actualizaste tus favoritos. Exportá la bóveda y guardá la copia nueva en tu USB para conservar este orden.',
   },
   master: {
     title: 'Actualizá tu respaldo antes de continuar',
@@ -1800,6 +1806,7 @@ function normalizeEntry(entry) {
     password: String(entry.password ?? ''),
     website: String(entry.website ?? '').trim(),
     notes: String(entry.notes ?? '').trim(),
+    favorite: entry.favorite === true,
     createdAt: entry.createdAt || new Date().toISOString(),
     updatedAt: entry.updatedAt || new Date().toISOString(),
   };
@@ -1848,6 +1855,8 @@ function historyEventLabel(event) {
     case 'credential-created': return `Contraseña agregada${detail}`;
     case 'credential-updated': return `Contraseña actualizada${detail}`;
     case 'credential-deleted': return `Contraseña eliminada${detail}`;
+    case 'credential-favorited': return `Contraseña agregada a favoritos${detail}`;
+    case 'credential-unfavorited': return `Contraseña quitada de favoritos${detail}`;
     case 'master-password-changed': return 'Clave maestra actualizada';
     case 'usb-key-created': return event.detail ? `Llave USB ${event.detail} creada` : 'Llave USB creada';
     case 'usb-key-disabled': return 'Llave USB desactivada';
@@ -1963,11 +1972,30 @@ function entryCard(entry) {
 
   const heading = document.createElement('div');
   heading.className = 'entry-summary';
+  const summary = document.createElement('div');
+  summary.className = 'entry-summary-copy';
   const service = document.createElement('h3');
   service.textContent = entry.service;
   const username = document.createElement('p');
   username.textContent = entry.username;
-  heading.append(service, username);
+  summary.append(service, username);
+
+  const favorite = document.createElement('button');
+  favorite.type = 'button';
+  favorite.className = `favorite-button${entry.favorite ? ' is-favorite' : ''}`;
+  favorite.dataset.action = 'favorite';
+  favorite.dataset.id = entry.id;
+  favorite.setAttribute('aria-pressed', String(Boolean(entry.favorite)));
+  favorite.setAttribute('aria-label', entry.favorite ? 'Quitar de favoritos' : 'Agregar a favoritos');
+  favorite.title = entry.favorite ? 'Quitar de favoritos' : 'Agregar a favoritos';
+  const favoriteIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  favoriteIcon.classList.add('button-icon');
+  favoriteIcon.setAttribute('aria-hidden', 'true');
+  const favoriteUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  favoriteUse.setAttribute('href', '#icon-star');
+  favoriteIcon.append(favoriteUse);
+  favorite.append(favoriteIcon);
+  heading.append(summary, favorite);
 
   const details = document.createElement('div');
   details.className = 'entry-details';
@@ -1994,7 +2022,12 @@ function renderEntries() {
   const matching = state.entries
     .filter((entry) => [entry.service, entry.username, entry.website, entry.notes]
       .join(' ').toLocaleLowerCase('es').includes(query))
-    .sort((a, b) => a.service.localeCompare(b.service, 'es'));
+    .sort((a, b) => {
+      const favoriteOrder = Number(Boolean(b.favorite)) - Number(Boolean(a.favorite));
+      if (favoriteOrder) return favoriteOrder;
+      return a.service.localeCompare(b.service, 'es')
+        || a.username.localeCompare(b.username, 'es');
+    });
   const container = $('entries');
   clearEntryElements();
   if (!matching.length) {
@@ -2046,6 +2079,41 @@ function editEntry(id) {
   $('cancelEditButton').classList.remove('hidden');
   $('service').focus();
   resetAutoLock();
+}
+
+async function toggleFavorite(id, button) {
+  const entry = state.entries.find((item) => item.id === id);
+  if (!entry) return;
+
+  const nextFavorite = !entry.favorite;
+  const previousEntries = state.entries;
+  let access;
+  let session;
+  if (button) button.disabled = true;
+  try {
+    access = captureVaultAccess();
+    session = state.pageSession;
+    state.entries = state.entries.map((item) => (item.id === id
+      ? { ...item, favorite: nextFavorite, updatedAt: new Date().toISOString() }
+      : item));
+    await saveVault(
+      'favorites',
+      createHistoryEvent(nextFavorite ? 'credential-favorited' : 'credential-unfavorited', entry.service),
+    );
+    renderEntries();
+    [...$('entries').querySelectorAll('button[data-action="favorite"]')]
+      .find((item) => item.dataset.id === id)
+      ?.focus();
+    showNotice(nextFavorite
+      ? 'Agregada a favoritos. Quedará primero en la lista.'
+      : 'Quitada de favoritos.');
+  } catch (_) {
+    if (state.pageSession === session && state.vaultAccess === access && state.key) {
+      state.entries = previousEntries;
+    }
+    if (button?.isConnected) button.disabled = false;
+    showNotice('No se pudo actualizar el favorito.', 'error');
+  }
 }
 
 async function copyPassword(id, button) {
@@ -2467,6 +2535,7 @@ async function saveEntry(event) {
     password,
     website: $('website').value,
     notes: $('notes').value,
+    favorite: previous?.favorite ?? false,
     createdAt: previous?.createdAt,
   });
 
@@ -3447,6 +3516,7 @@ async function start() {
     if (action === 'reveal') toggleEntryPassword(id, button);
     if (action === 'edit') editEntry(id);
     if (action === 'delete') deleteEntry(id);
+    if (action === 'favorite') toggleFavorite(id, button);
   });
 
   $('lockButton').addEventListener('click', () => requestBackupBefore(() => lockVault()));

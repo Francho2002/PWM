@@ -179,9 +179,16 @@ textarea { resize: vertical; }
 .search-field input { min-width: 11rem; padding: .58rem .7rem; }
 .entries { display: grid; gap: .65rem; }
 .entry-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: .6rem; border: 1px solid #dfe3e8; border-radius: .75rem; padding: .9rem; background: #fff; }
+.entry-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
+.entry-summary-copy { min-width: 0; flex: 1 1 auto; }
 .entry-summary h3, .entry-summary p { overflow: hidden; margin: 0; text-overflow: ellipsis; white-space: nowrap; }
 .entry-summary h3 { color: #172033; font-size: .98rem; }
 .entry-summary p { margin-top: .16rem; color: #667085; font-size: .82rem; }
+.favorite-button { display: inline-grid; width: 2rem; height: 2rem; flex: 0 0 auto; place-items: center; border: 1px solid transparent; border-radius: .5rem; background: transparent; color: #7a8798; padding: 0; }
+.favorite-button:hover { border-color: #d5dce6; background: #f6f8fb; color: #c27a00; }
+.favorite-button:focus-visible { outline: 3px solid #93b4ff; outline-offset: 2px; }
+.favorite-button.is-favorite { border-color: #f1c46c; background: #fff8e5; color: #ad6a00; }
+.favorite-button.is-favorite .button-icon { fill: currentColor; }
 .entry-details { min-width: 0; }
 .masked-password { display: inline-block; max-width: 100%; overflow: hidden; color: #526176; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 .entry-actions { flex-wrap: wrap; gap: .45rem; }
@@ -246,6 +253,8 @@ textarea { resize: vertical; }
 :root[data-theme="dark"] input::placeholder, :root[data-theme="dark"] textarea::placeholder { color: #8490a0; }
 :root[data-theme="dark"] .stack label, :root[data-theme="dark"] .field-label, :root[data-theme="dark"] .masked-password { color: #d4dae3; }
 :root[data-theme="dark"] .button.secondary:hover, :root[data-theme="dark"] .card-button:hover, :root[data-theme="dark"] .theme-toggle:hover, :root[data-theme="dark"] .icon-button:hover { background: #272e38; }
+:root[data-theme="dark"] .favorite-button:hover { border-color: #4a5564; background: #272e38; color: #f2bc55; }
+:root[data-theme="dark"] .favorite-button.is-favorite { border-color: #8d651f; background: #3a2b0d; color: #f2bd59; }
 :root[data-theme="dark"] .character-toggle { border-color: #3b4451; background: #11161d; color: #aeb7c4; }
 :root[data-theme="dark"] .character-toggle:hover { background: #272e38; }
 :root[data-theme="dark"] .character-toggle[aria-pressed="true"] { border-color: #5b8def; background: #192a47; color: #a9c7ff; box-shadow: inset 0 0 0 1px #5b8def; }
