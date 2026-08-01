@@ -2603,10 +2603,6 @@ function safeFileName(name) {
     || 'boveda';
 }
 
-function canUseSavePicker() {
-  return window.isSecureContext && typeof window.showSaveFilePicker === 'function';
-}
-
 function isCancelledFileOperation(error) {
   return error?.name === 'AbortError';
 }
@@ -2619,7 +2615,13 @@ function canUseDirectoryPicker() {
   return window.isSecureContext && typeof window.showDirectoryPicker === 'function';
 }
 
-async function newFileHandleInDirectory(directoryHandle, fileName) {
+function existingFileError(fileName, existingFileDescription) {
+  const error = new Error(`“${fileName}” ya existe. NO se reemplazó ${existingFileDescription}. Elegí otra carpeta para guardarlo.`);
+  error.name = 'ExistingFileError';
+  return error;
+}
+
+async function newFileHandleInDirectory(directoryHandle, fileName, existingFileDescription) {
   try {
     await directoryHandle.getFileHandle(fileName, { create: false });
   } catch (error) {
@@ -2627,18 +2629,14 @@ async function newFileHandleInDirectory(directoryHandle, fileName) {
       const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
       const existingFile = await fileHandle.getFile();
       if (existingFile.size > 0) {
-        const existingError = new Error('Ese archivo ya existe. Elegí otra carpeta para no reemplazar una llave anterior.');
-        existingError.name = 'ExistingFileError';
-        throw existingError;
+        throw existingFileError(fileName, existingFileDescription);
       }
       return fileHandle;
     }
     throw error;
   }
 
-  const error = new Error('Ese archivo ya existe. Elegí otra carpeta para no reemplazar una llave anterior.');
-  error.name = 'ExistingFileError';
-  throw error;
+  throw existingFileError(fileName, existingFileDescription);
 }
 
 function triggerTextDownload(text, fileName) {
@@ -2654,43 +2652,18 @@ function triggerTextDownload(text, fileName) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-async function saveTextWithPicker(text, fileName, description) {
-  let writable = null;
-  try {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: fileName,
-      types: [{
-        description,
-        accept: { 'application/json': ['.json'] },
-      }],
-    });
-    writable = await handle.createWritable();
-    await writable.write(text);
-    await writable.close();
-    writable = null;
-    const savedFile = await handle.getFile();
-    if (await savedFile.text() !== text) throw new Error('El archivo guardado no pudo comprobarse.');
-    return { saved: true };
-  } catch (error) {
-    if (writable) {
-      try {
-        await writable.abort();
-      } catch (_) {
-        // La bóveda sigue pendiente aunque el navegador no pueda abortar el archivo parcial.
-      }
-    }
-    return { saved: false, cancelled: isCancelledFileOperation(error), error };
-  }
-}
-
-async function saveNewUsbKeyInDirectory(text, fileName) {
+async function saveNewTextInDirectory(text, fileName, { pickerId, existingFileDescription }) {
   let writable = null;
   try {
     const directoryHandle = await window.showDirectoryPicker({
-      id: 'pwm-usb-keys',
+      id: pickerId,
       mode: 'readwrite',
     });
-    const fileHandle = await newFileHandleInDirectory(directoryHandle, fileName);
+    const fileHandle = await newFileHandleInDirectory(
+      directoryHandle,
+      fileName,
+      existingFileDescription,
+    );
     writable = await fileHandle.createWritable();
     await writable.write(text);
     await writable.close();
@@ -2703,7 +2676,7 @@ async function saveNewUsbKeyInDirectory(text, fileName) {
       try {
         await writable.abort();
       } catch (_) {
-        // La llave sigue pendiente aunque el navegador no pueda abortar el archivo parcial.
+        // El guardado sigue pendiente aunque el navegador no pueda abortar el archivo parcial.
       }
     }
     return {
@@ -2713,6 +2686,20 @@ async function saveNewUsbKeyInDirectory(text, fileName) {
       error,
     };
   }
+}
+
+function saveNewUsbKeyInDirectory(text, fileName) {
+  return saveNewTextInDirectory(text, fileName, {
+    pickerId: 'pwm-usb-keys',
+    existingFileDescription: 'una llave anterior',
+  });
+}
+
+function saveNewBackupInDirectory(text, fileName) {
+  return saveNewTextInDirectory(text, fileName, {
+    pickerId: 'pwm-vault-backups',
+    existingFileDescription: 'una copia cifrada anterior',
+  });
 }
 
 function vaultRecordSnapshot(record) {
@@ -2852,16 +2839,25 @@ async function downloadBackup() {
   if (button.disabled) return false;
   button.disabled = true;
   try {
-    if (canUseSavePicker()) {
-      const result = await saveTextWithPicker(pending.text, pending.fileName, 'Copia cifrada de PWM');
+    if (canUseDirectoryPicker()) {
+      const result = await saveNewBackupInDirectory(pending.text, pending.fileName);
       if (result.saved) {
         await completeBackupExport(pending);
         return true;
+      }
+      if (result.existingFile) {
+        showNotice(`${result.error.message} El respaldo sigue pendiente.`, 'error');
+        return false;
       }
       if (result.cancelled) {
         showNotice('No se guard\u00f3 la copia. El respaldo sigue pendiente.', 'error');
         return false;
       }
+      showNotice(
+        `${result.error?.message || 'No se pudo guardar la copia en esa carpeta.'} El respaldo sigue pendiente.`,
+        'error',
+      );
+      return false;
     }
 
     triggerTextDownload(pending.text, pending.fileName);
