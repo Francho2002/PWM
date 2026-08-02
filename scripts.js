@@ -7,6 +7,7 @@ const STORE_NAME = 'vault';
 const INDEX_KEY = 'vault-index';
 const LEGACY_RECORD_KEY = 'current';
 const VAULT_RECORD_PREFIX = 'vault:';
+const SYNC_CHECKPOINT_PREFIX = '__pwm_internal:sync-checkpoint:';
 const PBKDF2_ITERATIONS = 600_000;
 const AUTO_LOCK_MS = 15 * 60 * 1000;
 const CLIPBOARD_CLEAR_MS = 20_000;
@@ -18,6 +19,7 @@ const BACKUP_MAX_BYTES = 50 * 1024 * 1024;
 const DEK_BYTES = 32;
 const GENERATED_PASSWORD_LENGTH = 20;
 const HISTORY_LIMIT = 200;
+const SYNC_PAYLOAD_VERSION = 1;
 const HOME_BACKGROUND_INTERVAL_MS = 10_000;
 // El índice de bóvedas también es compartido: una única exclusión para todo el
 // origen evita que dos pestañas escriban índices desde snapshots viejos.
@@ -90,7 +92,10 @@ const HISTORY_TYPES = new Set([
   'master-password-changed',
   'usb-key-created',
   'usb-key-disabled',
+  'sync-merged',
+  'sync-undone',
 ]);
+const LOCAL_ONLY_SYNC_HISTORY_TYPES = new Set(['sync-merged', 'sync-undone']);
 const PASSWORD_CHARACTER_GROUPS = Object.freeze({
   uppercase: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
   lowercase: 'abcdefghijkmnopqrstuvwxyz',
@@ -122,12 +127,17 @@ const BACKUP_REMINDERS = Object.freeze({
     title: 'Copia urgente requerida',
     text: 'La bóveda se actualizó. Exportá una copia nueva a tu USB para conservar un respaldo compatible.',
   },
+  sync: {
+    title: 'Exportá la bóveda sincronizada ahora',
+    text: 'Combinaste cambios de otro dispositivo. Guardá una copia nueva. Después, en el otro dispositivo usá Sincronizar → Fusionar copia para que ambos queden iguales.',
+  },
 });
 
 const state = {
   key: null,
   keyBytes: null,
   entries: [],
+  tombstones: [],
   history: [],
   appearance: { version: 1, background: 'default' },
   appearanceDraft: null,
@@ -139,6 +149,7 @@ const state = {
   index: {
     format: 'pwm-vault-index',
     version: 2,
+    deviceId: TAB_INSTANCE_ID,
     activeVaultId: null,
     vaults: [],
   },
@@ -154,6 +165,7 @@ const state = {
   pendingVaultAccessRelease: null,
   pageSession: 0,
   usbKeyBusy: false,
+  pendingSync: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -803,7 +815,9 @@ async function saveAppearance() {
   assertVaultAccess(access, true);
   const expectedSnapshot = vaultRecordSnapshot(state.record);
   const encrypted = await encryptPayloadV2(state.key, {
+    syncVersion: SYNC_PAYLOAD_VERSION,
     entries: state.entries,
+    tombstones: state.tombstones,
     history: state.history,
     appearance: state.appearance,
   });
@@ -816,6 +830,7 @@ async function saveAppearance() {
     (index) => ({
       record,
       index: updateVaultMetadata(index, state.vaultId, state.vaultName, record.updatedAt),
+      deleteKeys: [syncCheckpointKey(state.vaultId)],
     }),
   );
   assertVaultAccess(access, true);
@@ -1248,6 +1263,12 @@ async function commitVaultSnapshot(access, vaultId, expectedRecordSnapshot, expe
         }
         if (result.record) store.put(result.record, vaultRecordKey(vaultId));
         store.put(result.index, INDEX_KEY);
+        if (Array.isArray(result.additionalValues)) {
+          result.additionalValues.forEach(([key, value]) => store.put(value, key));
+        }
+        if (Array.isArray(result.deleteKeys)) {
+          result.deleteKeys.forEach((key) => store.delete(key));
+        }
       } catch (error) {
         fail(error.message || 'No pude completar la operación.');
       }
@@ -1286,6 +1307,7 @@ function emptyIndex() {
   return {
     format: 'pwm-vault-index',
     version: 2,
+    deviceId: crypto.randomUUID(),
     activeVaultId: null,
     vaults: [],
   };
@@ -1363,7 +1385,8 @@ function validateVaultIndex(index) {
 
 function ensureVaultMetadata(index) {
   const usedUids = new Set();
-  let changed = false;
+  const deviceId = validUuid(index.deviceId) ? index.deviceId : crypto.randomUUID();
+  let changed = deviceId !== index.deviceId;
   const vaults = index.vaults.map((vault) => {
     let uid = vault.uid;
     if (!validUuid(uid) || usedUids.has(uid)) {
@@ -1401,7 +1424,7 @@ function ensureVaultMetadata(index) {
     };
   });
   return {
-    index: changed ? { ...index, vaults } : index,
+    index: changed ? { ...index, deviceId, vaults } : index,
     changed,
   };
 }
@@ -1757,7 +1780,7 @@ async function exportThenContinue() {
   }
 }
 
-async function saveVault(backupReason = 'credentials', historyEvent = null) {
+async function saveVault(backupReason = 'credentials', historyEvent = null, options = {}) {
   if (!state.key || !state.keyBytes || !state.record || state.record.version !== 2 || !state.vaultId) {
     throw new Error('Bóveda bloqueada');
   }
@@ -1768,12 +1791,24 @@ async function saveVault(backupReason = 'credentials', historyEvent = null) {
     ? historyWithEvent(state.history, historyEvent)
     : state.history;
   const encrypted = await encryptPayloadV2(state.key, {
+    syncVersion: SYNC_PAYLOAD_VERSION,
     entries: state.entries,
+    tombstones: state.tombstones,
     history: nextHistory,
     appearance: state.appearance,
   });
   const updatedAt = new Date().toISOString();
   const nextRecord = { ...state.record, ...encrypted, updatedAt };
+  const syncCheckpoint = options.syncCheckpointBeforeRecord
+    ? {
+      format: 'pwm-sync-checkpoint',
+      version: 1,
+      vaultUid: options.syncVaultUid,
+      createdAt: updatedAt,
+      beforeRecord: options.syncCheckpointBeforeRecord,
+      afterSnapshot: vaultRecordSnapshot(nextRecord),
+    }
+    : null;
   const committed = await commitVaultSnapshot(
     access,
     state.vaultId,
@@ -1788,6 +1823,10 @@ async function saveVault(backupReason = 'credentials', historyEvent = null) {
         updatedAt,
         { needsBackup: true, backupReason },
       ),
+      additionalValues: syncCheckpoint
+        ? [[syncCheckpointKey(state.vaultId), syncCheckpoint]]
+        : [],
+      deleteKeys: syncCheckpoint ? [] : [syncCheckpointKey(state.vaultId)],
     }),
   );
   assertVaultAccess(access, true);
@@ -1796,6 +1835,60 @@ async function saveVault(backupReason = 'credentials', historyEvent = null) {
   state.index = committed.index;
   renderVaultSelect(state.vaultId);
   resetAutoLock();
+}
+
+function normalizeSyncClock(clock) {
+  if (!clock || typeof clock !== 'object' || Array.isArray(clock)) return {};
+  const normalized = {};
+  Object.entries(clock).forEach(([deviceId, counter]) => {
+    if (validUuid(deviceId) && Number.isSafeInteger(counter) && counter > 0) {
+      normalized[deviceId] = counter;
+    }
+  });
+  return normalized;
+}
+
+function mergeSyncClocks(...clocks) {
+  const merged = {};
+  clocks.forEach((clock) => {
+    Object.entries(normalizeSyncClock(clock)).forEach(([deviceId, counter]) => {
+      merged[deviceId] = Math.max(merged[deviceId] || 0, counter);
+    });
+  });
+  return merged;
+}
+
+function compareSyncClocks(leftClock, rightClock) {
+  const left = normalizeSyncClock(leftClock);
+  const right = normalizeSyncClock(rightClock);
+  const deviceIds = new Set([...Object.keys(left), ...Object.keys(right)]);
+  let leftAhead = false;
+  let rightAhead = false;
+  deviceIds.forEach((deviceId) => {
+    const leftValue = left[deviceId] || 0;
+    const rightValue = right[deviceId] || 0;
+    if (leftValue > rightValue) leftAhead = true;
+    if (rightValue > leftValue) rightAhead = true;
+  });
+  if (!leftAhead && !rightAhead) return 'equal';
+  if (leftAhead && !rightAhead) return 'left';
+  if (rightAhead && !leftAhead) return 'right';
+  return 'concurrent';
+}
+
+function nextSyncClock(clock = {}) {
+  const next = mergeSyncClocks(clock);
+  const deviceId = validUuid(state.index.deviceId) ? state.index.deviceId : TAB_INSTANCE_ID;
+  next[deviceId] = (next[deviceId] || 0) + 1;
+  return next;
+}
+
+function resolvedSyncClock(...clocks) {
+  return nextSyncClock(mergeSyncClocks(...clocks));
+}
+
+function syncClockHasChanges(clock) {
+  return Object.keys(normalizeSyncClock(clock)).length > 0;
 }
 
 function normalizeEntry(entry) {
@@ -1809,7 +1902,41 @@ function normalizeEntry(entry) {
     favorite: entry.favorite === true,
     createdAt: entry.createdAt || new Date().toISOString(),
     updatedAt: entry.updatedAt || new Date().toISOString(),
+    syncClock: normalizeSyncClock(entry.syncClock),
   };
+}
+
+function normalizeTombstone(tombstone) {
+  if (!tombstone || typeof tombstone !== 'object' || typeof tombstone.id !== 'string' || !tombstone.id) {
+    return null;
+  }
+  const deletedAt = new Date(tombstone.deletedAt);
+  if (Number.isNaN(deletedAt.getTime())) return null;
+  return {
+    id: tombstone.id,
+    deletedAt: deletedAt.toISOString(),
+    syncClock: normalizeSyncClock(tombstone.syncClock),
+  };
+}
+
+function normalizeTombstones(tombstones) {
+  if (!Array.isArray(tombstones)) return [];
+  const byId = new Map();
+  tombstones.forEach((value) => {
+    const tombstone = normalizeTombstone(value);
+    if (!tombstone) return;
+    const previous = byId.get(tombstone.id);
+    if (!previous) {
+      byId.set(tombstone.id, tombstone);
+      return;
+    }
+    byId.set(tombstone.id, {
+      id: tombstone.id,
+      deletedAt: previous.deletedAt > tombstone.deletedAt ? previous.deletedAt : tombstone.deletedAt,
+      syncClock: mergeSyncClocks(previous.syncClock, tombstone.syncClock),
+    });
+  });
+  return [...byId.values()];
 }
 
 function normalizeHistoryEvent(event) {
@@ -1860,6 +1987,8 @@ function historyEventLabel(event) {
     case 'master-password-changed': return 'Clave maestra actualizada';
     case 'usb-key-created': return event.detail ? `Llave USB ${event.detail} creada` : 'Llave USB creada';
     case 'usb-key-disabled': return 'Llave USB desactivada';
+    case 'sync-merged': return event.detail ? `Sincronización aplicada${detail}` : 'Sincronización aplicada';
+    case 'sync-undone': return 'Última sincronización deshecha';
     default: return 'Cambio en la bóveda';
   }
 }
@@ -2094,7 +2223,12 @@ async function toggleFavorite(id, button) {
     access = captureVaultAccess();
     session = state.pageSession;
     state.entries = state.entries.map((item) => (item.id === id
-      ? { ...item, favorite: nextFavorite, updatedAt: new Date().toISOString() }
+      ? {
+        ...item,
+        favorite: nextFavorite,
+        updatedAt: new Date().toISOString(),
+        syncClock: nextSyncClock(item.syncClock),
+      }
       : item));
     await saveVault(
       'favorites',
@@ -2186,7 +2320,9 @@ async function createVault(event) {
       createHistoryEvent('vault-created'),
     ];
     const created = await createV2Record(master, {
+      syncVersion: SYNC_PAYLOAD_VERSION,
       entries: [],
+      tombstones: [],
       history: initialHistory,
       appearance: { version: 1, background: 'default' },
     }, createdAt);
@@ -2221,6 +2357,7 @@ async function createVault(event) {
     state.keyBytes = keyBytes;
     pendingKeyBytes = null;
     state.entries = [];
+    state.tombstones = [];
     state.history = initialHistory;
     state.appearance = { version: 1, background: 'default' };
     state.record = record;
@@ -2277,7 +2414,9 @@ async function unlockVault(event) {
       const legacyKey = await deriveKey(master, bytesFromBase64(record.salt), record.iterations);
       payload = await decryptPayloadV1(legacyKey, record);
       payload = {
+        syncVersion: SYNC_PAYLOAD_VERSION,
         entries: payload.entries,
+        tombstones: [],
         history: historyWithEvent(
           payload.history,
           createHistoryEvent('vault-migrated'),
@@ -2329,6 +2468,7 @@ function activateUnlockedVault(vaultId, vaultName, record, key, keyBytes, payloa
   state.key = key;
   state.keyBytes = keyBytes;
   state.entries = payload.entries.map(normalizeEntry);
+  state.tombstones = normalizeTombstones(payload.tombstones);
   state.history = normalizeHistory(payload.history);
   state.appearance = normalizeAppearance(payload.appearance);
   state.record = record;
@@ -2475,11 +2615,14 @@ function lockVault(expired = false) {
   if ($('backupVerificationDialog').open) $('backupVerificationDialog').close();
   if ($('appearanceDialog').open) closeAppearanceDialog(false);
   if ($('historyDialog').open) $('historyDialog').close();
+  clearPendingSync();
+  if ($('syncDialog').open) $('syncDialog').close();
   clearVaultDom();
   state.key = null;
   if (state.keyBytes) state.keyBytes.fill(0);
   state.keyBytes = null;
   state.entries = [];
+  state.tombstones = [];
   state.history = [];
   state.appearance = { version: 1, background: 'default' };
   state.appearanceDraft = null;
@@ -2557,9 +2700,11 @@ async function saveEntry(event) {
     notes: $('notes').value,
     favorite: previous?.favorite ?? false,
     createdAt: previous?.createdAt,
+    syncClock: nextSyncClock(previous?.syncClock),
   });
 
   const previousEntries = state.entries;
+  const previousTombstones = state.tombstones;
   let access;
   let session;
   try {
@@ -2568,6 +2713,7 @@ async function saveEntry(event) {
     state.entries = previous
       ? state.entries.map((item) => (item.id === id ? entry : item))
       : [...state.entries, entry];
+    state.tombstones = state.tombstones.filter((tombstone) => tombstone.id !== entry.id);
     await saveVault(
       'credentials',
       createHistoryEvent(
@@ -2583,6 +2729,7 @@ async function saveEntry(event) {
   } catch (_) {
     if (state.pageSession === session && state.vaultAccess === access && state.key) {
       state.entries = previousEntries;
+      state.tombstones = previousTombstones;
     }
     showNotice('No se pudo guardar el cambio.', 'error');
   }
@@ -2592,12 +2739,21 @@ async function deleteEntry(id) {
   const entry = state.entries.find((item) => item.id === id);
   if (!entry || !window.confirm(`¿Eliminar la contraseña de ${entry.service}?`)) return;
   const previousEntries = state.entries;
+  const previousTombstones = state.tombstones;
   let access;
   let session;
   try {
     access = captureVaultAccess();
     session = state.pageSession;
     state.entries = state.entries.filter((item) => item.id !== id);
+    state.tombstones = [
+      ...state.tombstones.filter((tombstone) => tombstone.id !== id),
+      {
+        id,
+        deletedAt: new Date().toISOString(),
+        syncClock: nextSyncClock(entry.syncClock),
+      },
+    ];
     await saveVault(
       'credentials',
       createHistoryEvent('credential-deleted', entry.service),
@@ -2608,6 +2764,7 @@ async function deleteEntry(id) {
   } catch (_) {
     if (state.pageSession === session && state.vaultAccess === access && state.key) {
       state.entries = previousEntries;
+      state.tombstones = previousTombstones;
     }
     showNotice('No se pudo eliminar la contraseña.', 'error');
   }
@@ -3051,6 +3208,614 @@ async function downloadBackup() {
   }
 }
 
+function syncCheckpointKey(vaultId) {
+  return `${SYNC_CHECKPOINT_PREFIX}${vaultId}`;
+}
+
+function syncError(message) {
+  const error = new Error(message);
+  error.name = 'SyncError';
+  return error;
+}
+
+function entrySyncContent(entry) {
+  return JSON.stringify({
+    service: entry.service,
+    username: entry.username,
+    password: entry.password,
+    website: entry.website,
+    notes: entry.notes,
+    favorite: entry.favorite === true,
+  });
+}
+
+function syncVersion(kind, value) {
+  return {
+    kind,
+    value,
+    clock: normalizeSyncClock(value?.syncClock),
+  };
+}
+
+function cloneSyncVersion(version) {
+  if (!version) return null;
+  if (version.kind === 'entry') {
+    const entry = normalizeEntry(version.value);
+    return syncVersion('entry', { ...entry, syncClock: normalizeSyncClock(entry.syncClock) });
+  }
+  const tombstone = normalizeTombstone(version.value);
+  return tombstone ? syncVersion('delete', tombstone) : null;
+}
+
+function syncVersionsEquivalent(left, right) {
+  if (!left || !right || left.kind !== right.kind) return false;
+  if (left.kind === 'delete') return true;
+  return entrySyncContent(left.value) === entrySyncContent(right.value);
+}
+
+function syncVersionState(version) {
+  if (!version) return 'missing';
+  const clock = Object.fromEntries(
+    Object.entries(normalizeSyncClock(version.clock)).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  if (version.kind === 'delete') {
+    return JSON.stringify({ kind: 'delete', deletedAt: version.value.deletedAt, clock });
+  }
+  return JSON.stringify({
+    kind: 'entry',
+    content: entrySyncContent(version.value),
+    createdAt: version.value.createdAt,
+    updatedAt: version.value.updatedAt,
+    clock,
+  });
+}
+
+function buildSyncVersionMap(entries, tombstones) {
+  const versions = new Map();
+  entries.map(normalizeEntry).forEach((entry) => {
+    if (versions.has(entry.id)) throw syncError('La copia contiene credenciales duplicadas y no puede fusionarse.');
+    versions.set(entry.id, syncVersion('entry', entry));
+  });
+  normalizeTombstones(tombstones).forEach((tombstone) => {
+    if (versions.has(tombstone.id)) {
+      throw syncError('La copia marca una misma credencial como activa y eliminada. No se modificó la bóveda.');
+    }
+    versions.set(tombstone.id, syncVersion('delete', tombstone));
+  });
+  return versions;
+}
+
+function mergeSyncHistory(localHistory, incomingHistory) {
+  const merged = new Map();
+  const localEvents = normalizeHistory(localHistory);
+  const incomingEvents = normalizeHistory(incomingHistory)
+    .filter((event) => !LOCAL_ONLY_SYNC_HISTORY_TYPES.has(event.type));
+  [...localEvents, ...incomingEvents].forEach((event) => {
+    if (!merged.has(event.id)) merged.set(event.id, event);
+  });
+  return [...merged.values()]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+    .slice(-HISTORY_LIMIT);
+}
+
+function countAppliedSyncChange(localVersion, nextVersion, counts) {
+  if (!nextVersion || !localVersion) {
+    if (nextVersion?.kind === 'entry') counts.added += 1;
+    return;
+  }
+  if (localVersion.kind === 'entry' && nextVersion.kind === 'delete') {
+    counts.deleted += 1;
+    return;
+  }
+  if (localVersion.kind === 'delete' && nextVersion.kind === 'entry') {
+    counts.added += 1;
+    return;
+  }
+  if (
+    localVersion.kind === 'entry'
+    && nextVersion.kind === 'entry'
+    && entrySyncContent(localVersion.value) !== entrySyncContent(nextVersion.value)
+  ) counts.updated += 1;
+}
+
+function buildVaultSyncPlan(incomingPayload) {
+  const localVersions = buildSyncVersionMap(state.entries, state.tombstones);
+  const incomingVersions = buildSyncVersionMap(incomingPayload.entries, incomingPayload.tombstones);
+  const resultVersions = new Map();
+  const conflicts = [];
+  const counts = { added: 0, updated: 0, deleted: 0 };
+  const entryIds = new Set([...localVersions.keys(), ...incomingVersions.keys()]);
+
+  entryIds.forEach((entryId) => {
+    const local = localVersions.get(entryId) || null;
+    const incoming = incomingVersions.get(entryId) || null;
+    if (!local || !incoming) {
+      const only = local || incoming;
+      if (syncClockHasChanges(only.clock)) {
+        resultVersions.set(entryId, cloneSyncVersion(only));
+        if (!local) countAppliedSyncChange(local, only, counts);
+      } else {
+        conflicts.push({ id: crypto.randomUUID(), entryId, local, incoming, reason: 'legacy-missing' });
+      }
+      return;
+    }
+
+    const order = compareSyncClocks(local.clock, incoming.clock);
+    if (order === 'left') {
+      resultVersions.set(entryId, cloneSyncVersion(local));
+      return;
+    }
+    if (order === 'right') {
+      resultVersions.set(entryId, cloneSyncVersion(incoming));
+      countAppliedSyncChange(local, incoming, counts);
+      return;
+    }
+    if (syncVersionsEquivalent(local, incoming)) {
+      const selected = cloneSyncVersion(local);
+      selected.clock = mergeSyncClocks(local.clock, incoming.clock);
+      selected.value.syncClock = selected.clock;
+      resultVersions.set(entryId, selected);
+      return;
+    }
+    conflicts.push({
+      id: crypto.randomUUID(),
+      entryId,
+      local,
+      incoming,
+      reason: order === 'concurrent' ? 'concurrent' : 'legacy-different',
+    });
+  });
+
+  const mergedHistory = mergeSyncHistory(state.history, incomingPayload.history);
+  const historyChanged = JSON.stringify(mergedHistory) !== JSON.stringify(normalizeHistory(state.history));
+  const automaticStateChanged = [...resultVersions.entries()].some(
+    ([entryId, version]) => syncVersionState(localVersions.get(entryId) || null) !== syncVersionState(version),
+  );
+  return {
+    resultVersions,
+    conflicts,
+    counts,
+    mergedHistory,
+    historyChanged,
+    automaticStateChanged,
+  };
+}
+
+function syncConflictEntry(conflict) {
+  return conflict.local?.kind === 'entry'
+    ? conflict.local.value
+    : conflict.incoming?.kind === 'entry'
+      ? conflict.incoming.value
+      : null;
+}
+
+function syncConflictTitle(conflict) {
+  return syncConflictEntry(conflict)?.service || 'Credencial eliminada';
+}
+
+function syncChangedFields(conflict) {
+  if (conflict.local?.kind !== 'entry' || conflict.incoming?.kind !== 'entry') return [];
+  const fields = [
+    ['service', 'servicio'],
+    ['username', 'correo/usuario'],
+    ['password', 'contraseña'],
+    ['website', 'sitio web'],
+    ['notes', 'notas'],
+    ['favorite', 'favorito'],
+  ];
+  return fields.filter(([field]) => conflict.local.value[field] !== conflict.incoming.value[field])
+    .map(([, label]) => label);
+}
+
+function syncConflictDescription(conflict) {
+  if (!conflict.local || !conflict.incoming) {
+    return 'Sólo existe en uno de los archivos antiguos. Elegí conservarla o mantenerla eliminada.';
+  }
+  if (conflict.local.kind !== conflict.incoming.kind) {
+    return 'Un dispositivo la eliminó y el otro la conservó o modificó.';
+  }
+  const fields = syncChangedFields(conflict);
+  return fields.length
+    ? `Ambos dispositivos cambiaron: ${fields.join(', ')}.`
+    : 'Ambos dispositivos generaron versiones diferentes.';
+}
+
+function syncVersionOption(version, location) {
+  if (!version || version.kind === 'delete') {
+    return {
+      label: location === 'local' ? 'Mantenerla eliminada en este dispositivo' : 'Aceptar que fue eliminada en el otro dispositivo',
+      detail: 'La credencial no aparecerá en la bóveda fusionada.',
+    };
+  }
+  const updatedAt = new Date(version.value.updatedAt);
+  const date = Number.isNaN(updatedAt.getTime())
+    ? 'fecha desconocida'
+    : new Intl.DateTimeFormat('es-AR', { dateStyle: 'medium', timeStyle: 'short' }).format(updatedAt);
+  return {
+    label: location === 'local' ? 'Conservar la versión de este dispositivo' : 'Usar la versión del archivo importado',
+    detail: `${version.value.username || 'Sin usuario'} · actualizada ${date}. La contraseña no se muestra en esta pantalla.`,
+  };
+}
+
+function appendSyncConflictOption(container, conflict, choice, copy) {
+  const label = document.createElement('label');
+  label.className = 'sync-conflict-option';
+  const input = document.createElement('input');
+  input.type = 'radio';
+  input.name = `sync-conflict-${conflict.id}`;
+  input.value = choice;
+  input.dataset.conflictId = conflict.id;
+  const text = document.createElement('span');
+  const title = document.createElement('strong');
+  title.textContent = copy.label;
+  const detail = document.createElement('small');
+  detail.textContent = copy.detail;
+  text.append(title, detail);
+  label.append(input, text);
+  container.append(label);
+}
+
+function renderSyncConflicts(conflicts) {
+  const container = $('syncConflicts');
+  container.replaceChildren();
+  conflicts.forEach((conflict) => {
+    const card = document.createElement('article');
+    card.className = 'sync-conflict';
+    const title = document.createElement('h4');
+    title.textContent = syncConflictTitle(conflict);
+    const description = document.createElement('p');
+    description.textContent = syncConflictDescription(conflict);
+    const options = document.createElement('div');
+    options.className = 'sync-conflict-options';
+    appendSyncConflictOption(options, conflict, 'local', syncVersionOption(conflict.local, 'local'));
+    appendSyncConflictOption(options, conflict, 'incoming', syncVersionOption(conflict.incoming, 'incoming'));
+    if (conflict.local?.kind === 'entry' && conflict.incoming?.kind === 'entry') {
+      appendSyncConflictOption(options, conflict, 'both', {
+        label: 'Conservar ambas como credenciales separadas',
+        detail: 'PWM duplicará la versión importada para que puedas revisarlas después.',
+      });
+    }
+    card.append(title, description, options);
+    container.append(card);
+  });
+}
+
+function syncSelectionsComplete() {
+  const pending = state.pendingSync;
+  if (!pending) return false;
+  return pending.conflicts.every((conflict) => Boolean(pending.choices.get(conflict.id)));
+}
+
+function updateApplySyncButton() {
+  const pending = state.pendingSync;
+  const hasChanges = Boolean(
+    pending
+    && (pending.automaticStateChanged || pending.conflicts.length || pending.historyChanged),
+  );
+  $('applySyncButton').disabled = !hasChanges || !syncSelectionsComplete();
+}
+
+function renderSyncPreview() {
+  const pending = state.pendingSync;
+  if (!pending) return;
+  $('syncIntroStep').classList.add('hidden');
+  $('syncPreviewStep').classList.remove('hidden');
+  $('syncAddedCount').textContent = String(pending.counts.added);
+  $('syncUpdatedCount').textContent = String(pending.counts.updated);
+  $('syncDeletedCount').textContent = String(pending.counts.deleted);
+  $('syncConflictCount').textContent = String(pending.conflicts.length);
+  const hasChanges = Boolean(
+    pending.automaticStateChanged || pending.conflicts.length || pending.historyChanged
+  );
+  $('syncSourceText').textContent = pending.conflicts.length
+    ? `La copia “${pending.fileName}” pertenece a esta bóveda. Revisá ${pending.conflicts.length} ${pending.conflicts.length === 1 ? 'conflicto' : 'conflictos'} antes de continuar.`
+    : hasChanges
+      ? `La copia “${pending.fileName}” pertenece a esta bóveda. Los cambios compatibles están listos para aplicarse.`
+      : `La copia “${pending.fileName}” pertenece a esta bóveda, pero no contiene cambios nuevos. Ambos archivos ya están sincronizados.`;
+  $('syncConflictSection').classList.toggle('hidden', !pending.conflicts.length);
+  renderSyncConflicts(pending.conflicts);
+  updateApplySyncButton();
+}
+
+function clearPendingSync() {
+  state.pendingSync = null;
+  $('syncInput').value = '';
+  $('syncConflicts').replaceChildren();
+}
+
+function closeSyncDialog() {
+  clearPendingSync();
+  $('syncPreviewStep').classList.add('hidden');
+  $('syncIntroStep').classList.remove('hidden');
+  if ($('syncDialog').open) $('syncDialog').close();
+  resetAutoLock();
+}
+
+async function updateUndoSyncAvailability() {
+  const button = $('undoSyncButton');
+  button.classList.add('hidden');
+  if (!state.vaultId || !state.record) return;
+  try {
+    const checkpoint = await readValue(syncCheckpointKey(state.vaultId));
+    if (
+      checkpoint?.format === 'pwm-sync-checkpoint'
+      && checkpoint.version === 1
+      && checkpoint.vaultUid === state.index.vaults.find((vault) => vault.id === state.vaultId)?.uid
+      && checkpoint.afterSnapshot === vaultRecordSnapshot(state.record)
+      && validateVaultRecord(checkpoint.beforeRecord)
+    ) button.classList.remove('hidden');
+  } catch (_) {
+    // La sincronización sigue disponible aunque no pueda ofrecerse deshacer.
+  }
+}
+
+async function openSyncDialog() {
+  if (!state.key || !state.vaultId || !state.record) return;
+  state.pendingSync = null;
+  $('syncPreviewStep').classList.add('hidden');
+  $('syncIntroStep').classList.remove('hidden');
+  $('syncDialog').showModal();
+  await updateUndoSyncAvailability();
+  $('chooseSyncFileButton').focus();
+  resetAutoLock();
+}
+
+async function prepareSyncFile(event) {
+  const [file] = event.target.files;
+  event.target.value = '';
+  if (!file || !state.key || !state.vaultId || !state.record) return;
+  $('chooseSyncFileButton').disabled = true;
+  try {
+    if (file.size <= 0 || file.size > BACKUP_MAX_BYTES) {
+      throw syncError('La copia seleccionada no tiene un tamaño válido.');
+    }
+    const parsed = JSON.parse(await file.text());
+    if (parsed?.format === USB_KEY_FORMAT) throw syncError(KEY_AS_VAULT_MESSAGE);
+    if (parsed?.format !== 'pwm-vault-backup' || parsed.version !== 3) {
+      throw syncError('Elegí una copia cifrada reciente exportada desde la misma bóveda.');
+    }
+    const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+    if (!metadata || parsed.vaultUid !== metadata.uid) {
+      const otherName = typeof parsed.name === 'string' && parsed.name.trim() ? ` “${parsed.name.trim()}”` : '';
+      throw syncError(`Esa copia pertenece a otra bóveda${otherName}. Elegí una exportación de “${state.vaultName}”.`);
+    }
+    if (!validateVaultRecord(parsed.vault) || parsed.vault.version !== 2) {
+      throw syncError('La copia pertenece a esta bóveda, pero usa un formato antiguo. Abrila y exportala nuevamente en el otro dispositivo.');
+    }
+
+    let incomingPayload;
+    try {
+      incomingPayload = await decryptPayloadV2(state.key, parsed.vault);
+    } catch (_) {
+      throw syncError('La copia tiene el mismo identificador, pero no comparte la clave de cifrado de esta bóveda. No se modificó nada.');
+    }
+    const plan = buildVaultSyncPlan(incomingPayload);
+    state.pendingSync = {
+      ...plan,
+      choices: new Map(),
+      fileName: file.name,
+      sourceName: typeof parsed.name === 'string' ? parsed.name : state.vaultName,
+    };
+    renderSyncPreview();
+    resetAutoLock();
+  } catch (error) {
+    showNotice(
+      error.name === 'SyncError' ? error.message : 'No pude leer esa copia para sincronizar. No se modificó la bóveda.',
+      'error',
+    );
+  } finally {
+    $('chooseSyncFileButton').disabled = false;
+  }
+}
+
+function resolvedConflictVersions(conflict, choice) {
+  const combinedClock = resolvedSyncClock(conflict.local?.clock, conflict.incoming?.clock);
+  const now = new Date().toISOString();
+  if (choice === 'both' && conflict.local?.kind === 'entry' && conflict.incoming?.kind === 'entry') {
+    const localEntry = normalizeEntry({
+      ...conflict.local.value,
+      updatedAt: now,
+      syncClock: combinedClock,
+    });
+    const incomingEntry = normalizeEntry({
+      ...conflict.incoming.value,
+      id: crypto.randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      syncClock: nextSyncClock(),
+    });
+    return [syncVersion('entry', localEntry), syncVersion('entry', incomingEntry)];
+  }
+
+  const selected = choice === 'incoming' ? conflict.incoming : conflict.local;
+  if (selected?.kind === 'entry') {
+    const entry = normalizeEntry({ ...selected.value, updatedAt: now, syncClock: combinedClock });
+    return [syncVersion('entry', entry)];
+  }
+  return [syncVersion('delete', {
+    id: conflict.entryId,
+    deletedAt: now,
+    syncClock: combinedClock,
+  })];
+}
+
+async function applyPendingSync() {
+  const pending = state.pendingSync;
+  if (!pending || !syncSelectionsComplete() || !state.key || !state.vaultId) return;
+  const button = $('applySyncButton');
+  button.disabled = true;
+  const previousEntries = state.entries;
+  const previousTombstones = state.tombstones;
+  const previousHistory = state.history;
+  const beforeRecord = state.record;
+  const access = captureVaultAccess();
+  const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+  let mergeCommitted = false;
+  try {
+    assertVaultAccess(access, true);
+    const versions = new Map(pending.resultVersions);
+    const finalCounts = { ...pending.counts };
+    pending.conflicts.forEach((conflict) => {
+      const choice = pending.choices.get(conflict.id);
+      const resolved = resolvedConflictVersions(conflict, choice);
+      versions.set(conflict.entryId, resolved[0]);
+      countAppliedSyncChange(conflict.local, resolved[0], finalCounts);
+      if (resolved[1]) {
+        versions.set(resolved[1].value.id, resolved[1]);
+        finalCounts.added += 1;
+      }
+    });
+    state.entries = [];
+    state.tombstones = [];
+    versions.forEach((version) => {
+      if (version.kind === 'entry') state.entries.push(normalizeEntry(version.value));
+      if (version.kind === 'delete') state.tombstones.push(normalizeTombstone(version.value));
+    });
+    state.tombstones = normalizeTombstones(state.tombstones);
+    state.history = pending.mergedHistory;
+    const visibleChangeCount = finalCounts.added + finalCounts.updated + finalCounts.deleted;
+    await saveVault(
+      'sync',
+      createHistoryEvent(
+        'sync-merged',
+        visibleChangeCount
+          ? `${finalCounts.added} nuevas, ${finalCounts.updated} actualizadas, ${finalCounts.deleted} eliminadas`
+          : 'estado entre dispositivos actualizado',
+      ),
+      {
+        syncCheckpointBeforeRecord: beforeRecord,
+        syncVaultUid: metadata?.uid,
+      },
+    );
+    mergeCommitted = true;
+    closeSyncDialog();
+    renderEntries();
+    showNotice('Sincronización aplicada. Exportá la bóveda ahora. En el otro dispositivo, usá Sincronizar → Fusionar copia con ese archivo.');
+  } catch (error) {
+    if (!mergeCommitted && state.vaultAccess === access && state.key) {
+      state.entries = previousEntries;
+      state.tombstones = previousTombstones;
+      state.history = previousHistory;
+    }
+    if (mergeCommitted) {
+      closeSyncDialog();
+      renderEntries();
+      showNotice('La sincronización se guardó, pero ocurrió un problema al cerrar el proceso. Exportá la bóveda ahora.', 'error');
+    } else {
+      showNotice(error.message || 'No se pudo aplicar la sincronización. No se modificó la bóveda.', 'error');
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function buildUndoneSyncState(payload) {
+  const currentVersions = buildSyncVersionMap(state.entries, state.tombstones);
+  const previousVersions = buildSyncVersionMap(payload.entries, payload.tombstones);
+  const entryIds = new Set([...currentVersions.keys(), ...previousVersions.keys()]);
+  const entries = [];
+  const tombstones = [];
+  const now = new Date().toISOString();
+
+  entryIds.forEach((entryId) => {
+    const current = currentVersions.get(entryId) || null;
+    const previous = previousVersions.get(entryId) || null;
+    if (previous?.kind === 'entry') {
+      entries.push(normalizeEntry({
+        ...previous.value,
+        syncClock: resolvedSyncClock(current?.clock, previous.clock),
+      }));
+      return;
+    }
+    if (previous?.kind === 'delete') {
+      tombstones.push({
+        id: entryId,
+        deletedAt: now,
+        syncClock: resolvedSyncClock(current?.clock, previous.clock),
+      });
+      return;
+    }
+    if (current?.kind === 'entry') {
+      tombstones.push({
+        id: entryId,
+        deletedAt: now,
+        syncClock: resolvedSyncClock(current.clock),
+      });
+      return;
+    }
+    if (current?.kind === 'delete') tombstones.push(normalizeTombstone(current.value));
+  });
+
+  return { entries, tombstones: normalizeTombstones(tombstones) };
+}
+
+async function undoLastSync() {
+  if (!state.key || !state.vaultId || !state.record) return;
+  if (!window.confirm('¿Deshacer la última sincronización? Los cambios posteriores impedirían esta acción.')) return;
+  const button = $('undoSyncButton');
+  button.disabled = true;
+  try {
+    const access = captureVaultAccess();
+    const expectedSnapshot = vaultRecordSnapshot(state.record);
+    const checkpoint = await readValue(syncCheckpointKey(state.vaultId));
+    const metadata = state.index.vaults.find((vault) => vault.id === state.vaultId);
+    if (
+      checkpoint?.format !== 'pwm-sync-checkpoint'
+      || checkpoint.version !== 1
+      || checkpoint.vaultUid !== metadata?.uid
+      || checkpoint.afterSnapshot !== expectedSnapshot
+      || !validateVaultRecord(checkpoint.beforeRecord)
+    ) throw syncError('La sincronización ya no puede deshacerse porque la bóveda cambió después.');
+
+    const payload = await decryptPayloadV2(state.key, checkpoint.beforeRecord);
+    const undone = buildUndoneSyncState(payload);
+    const { entries, tombstones } = undone;
+    const history = historyWithEvent(payload.history, createHistoryEvent('sync-undone'));
+    const encrypted = await encryptPayloadV2(state.key, {
+      syncVersion: SYNC_PAYLOAD_VERSION,
+      entries,
+      tombstones,
+      history,
+      appearance: normalizeAppearance(payload.appearance),
+    });
+    const updatedAt = new Date().toISOString();
+    const record = { ...checkpoint.beforeRecord, ...encrypted, updatedAt };
+    const committed = await commitVaultSnapshot(
+      access,
+      state.vaultId,
+      expectedSnapshot,
+      (currentMetadata) => currentMetadata.uid === checkpoint.vaultUid,
+      (index) => ({
+        record,
+        index: updateVaultMetadata(
+          index,
+          state.vaultId,
+          state.vaultName,
+          updatedAt,
+          { needsBackup: true, backupReason: 'sync' },
+        ),
+        deleteKeys: [syncCheckpointKey(state.vaultId)],
+      }),
+    );
+    assertVaultAccess(access, true);
+    state.entries = entries;
+    state.tombstones = tombstones;
+    state.history = history;
+    state.appearance = normalizeAppearance(payload.appearance);
+    state.record = record;
+    state.index = committed.index;
+    closeSyncDialog();
+    applyVaultBackground(state.appearance);
+    renderEntries();
+    updateBackupReminder();
+    showNotice('La última sincronización se deshizo. Exportá una copia nueva para respaldar este estado.');
+  } catch (error) {
+    showNotice(error.message || 'No pude deshacer la sincronización.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function extractBackup(value, fileName) {
   if (validateVaultRecord(value)) {
     return {
@@ -3211,7 +3976,9 @@ async function persistCurrentRecord(nextRecord, metadataUpdates = {}, historyEve
     ? historyWithEvent(state.history, historyEvent)
     : state.history;
   const encrypted = await encryptPayloadV2(state.key, {
+    syncVersion: SYNC_PAYLOAD_VERSION,
     entries: state.entries,
+    tombstones: state.tombstones,
     history: nextHistory,
     appearance: state.appearance,
   });
@@ -3231,6 +3998,7 @@ async function persistCurrentRecord(nextRecord, metadataUpdates = {}, historyEve
     (index) => ({
       record,
       index: updateVaultMetadata(index, state.vaultId, state.vaultName, updatedAt, updates),
+      deleteKeys: [syncCheckpointKey(state.vaultId)],
     }),
   );
   assertVaultAccess(access, true);
@@ -3584,7 +4352,7 @@ async function deleteCurrentVault(event) {
     };
     await writeAndDeleteValues(
       [[INDEX_KEY, nextIndex]],
-      [vaultRecordKey(deletedVaultId)],
+      [vaultRecordKey(deletedVaultId), syncCheckpointKey(deletedVaultId)],
       access,
     );
     assertVaultAccess(access, true);
@@ -3642,7 +4410,9 @@ async function changeMasterPassword(event) {
       createHistoryEvent('master-password-changed'),
     );
     const encrypted = await encryptPayloadV2(state.key, {
+      syncVersion: SYNC_PAYLOAD_VERSION,
       entries: state.entries,
+      tombstones: state.tombstones,
       history: nextHistory,
       appearance: state.appearance,
     });
@@ -3669,6 +4439,7 @@ async function changeMasterPassword(event) {
           updatedAt,
           { needsBackup: true, backupReason: 'master' },
         ),
+        deleteKeys: [syncCheckpointKey(state.vaultId)],
       }),
     );
     assertVaultAccess(access, true);
@@ -3782,6 +4553,28 @@ async function start() {
   $('historyDialog').addEventListener('cancel', (event) => {
     event.preventDefault();
     closeHistoryDialog();
+  });
+  $('syncButton').addEventListener('click', openSyncDialog);
+  $('closeSyncButton').addEventListener('click', closeSyncDialog);
+  $('cancelSyncPreviewButton').addEventListener('click', closeSyncDialog);
+  $('chooseSyncFileButton').addEventListener('click', () => $('syncInput').click());
+  $('syncInput').addEventListener('change', prepareSyncFile);
+  $('syncConflicts').addEventListener('change', (event) => {
+    const input = event.target.closest('input[data-conflict-id]');
+    if (!input || !state.pendingSync) return;
+    state.pendingSync.choices.set(input.dataset.conflictId, input.value);
+    updateApplySyncButton();
+    resetAutoLock();
+  });
+  $('applySyncButton').addEventListener('click', applyPendingSync);
+  $('undoSyncButton').addEventListener('click', undoLastSync);
+  $('exportForSyncButton').addEventListener('click', () => {
+    closeSyncDialog();
+    downloadBackup();
+  });
+  $('syncDialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeSyncDialog();
   });
   $('newVaultButton').addEventListener('click', () => showSetup(true));
   $('cancelSetupButton').addEventListener('click', () => {

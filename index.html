@@ -30,6 +30,10 @@
       <circle cx="12" cy="12" r="8"></circle>
       <path d="M12 8v4l3 2M5.8 5.8 4 4m0 0v4m0-4h4"></path>
     </symbol>
+    <symbol id="icon-sync" viewBox="0 0 24 24">
+      <path d="M4 7h12l-3-3m3 3-3 3"></path>
+      <path d="M20 17H8l3 3m-3-3 3-3"></path>
+    </symbol>
     <symbol id="icon-trash" viewBox="0 0 24 24">
       <path d="M4 7h16m-10-3h4l1 3M7 7l1 13h8l1-13M10 11v5m4-5v5"></path>
     </symbol>
@@ -152,6 +156,7 @@
             <button id="usbKeyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-usb"></use></svg>Archivo llave USB</button>
             <button id="exportButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-download"></use></svg>Exportar</button>
             <button id="importButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>Importar</button>
+            <button id="syncButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-sync"></use></svg>Sincronizar</button>
             <button id="historyButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-history"></use></svg>Mostrar historial</button>
           </div>
           <div class="toolbar-group vault-session-actions">
@@ -242,6 +247,7 @@
     </section>
 
     <input id="importInput" class="hidden" type="file" accept="application/json,.json">
+    <input id="syncInput" class="hidden" type="file" accept="application/json,.json">
     <input id="usbKeyInput" class="hidden" type="file" accept="application/json,.json">
     <input id="backupVerificationInput" class="hidden" type="file" accept="application/json,.json">
     <input id="usbKeyVerificationInput" class="hidden" type="file" accept="application/json,.json">
@@ -401,6 +407,56 @@
         <div id="historyList" class="history-list" aria-live="polite"></div>
         <div class="modal-actions">
           <button id="closeHistoryButton" class="button primary" type="button">Cerrar</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="syncDialog" class="modal sync-modal" aria-label="Sincronizar cambios entre dispositivos">
+      <div id="syncIntroStep" class="stack">
+        <div>
+          <p class="eyebrow">Entre dispositivos</p>
+          <h2 id="syncTitle">Sincronizar cambios</h2>
+          <p class="helper">Combina una copia exportada en otro dispositivo con la bóveda que tenés abierta. No reemplaza todo ni elige cambios silenciosamente.</p>
+        </div>
+        <ol class="sync-steps">
+          <li><span>1</span><p><strong>En el otro dispositivo</strong> exportá una copia cifrada de esta misma bóveda.</p></li>
+          <li><span>2</span><p><strong>En este dispositivo</strong> elegí “Fusionar copia” y revisá el resumen.</p></li>
+          <li><span>3</span><p><strong>Al terminar</strong> exportá el resultado. En el otro dispositivo, volvé a <strong>Sincronizar → Fusionar copia</strong> para que ambos queden iguales.</p></li>
+        </ol>
+        <aside class="sync-safety-note">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-lock"></use></svg>
+          <p><strong>Tu acceso local no cambia.</strong> El archivo se procesa en este navegador y no se sube a internet. Se combinan contraseñas, favoritos, eliminaciones e historial; la clave maestra y la llave USB de este dispositivo se conservan.</p>
+        </aside>
+        <button id="undoSyncButton" class="button secondary hidden" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-history"></use></svg>Deshacer última sincronización</button>
+        <div class="modal-actions sync-intro-actions">
+          <button id="closeSyncButton" class="button secondary" type="button">Cerrar</button>
+          <button id="exportForSyncButton" class="button secondary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-download"></use></svg>Exportar para otro dispositivo</button>
+          <button id="chooseSyncFileButton" class="button primary" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-sync"></use></svg>Fusionar copia</button>
+        </div>
+      </div>
+      <div id="syncPreviewStep" class="stack hidden">
+        <div>
+          <p class="eyebrow">Revisión necesaria</p>
+          <h2>Revisá la fusión</h2>
+          <p id="syncSourceText" class="helper"></p>
+        </div>
+        <div class="sync-summary" aria-label="Resumen de sincronización">
+          <div><strong id="syncAddedCount">0</strong><span>Nuevas</span></div>
+          <div><strong id="syncUpdatedCount">0</strong><span>Actualizadas</span></div>
+          <div><strong id="syncDeletedCount">0</strong><span>Eliminadas</span></div>
+          <div><strong id="syncConflictCount">0</strong><span>Conflictos</span></div>
+        </div>
+        <section id="syncConflictSection" class="stack hidden" aria-labelledby="syncConflictTitle">
+          <div>
+            <h3 id="syncConflictTitle">Elegí qué hacer con estos conflictos</h3>
+            <p class="helper">Dos dispositivos cambiaron la misma credencial. PWM no decidirá por vos ni mostrará las contraseñas en esta pantalla.</p>
+          </div>
+          <div id="syncConflicts" class="sync-conflicts"></div>
+        </section>
+        <p class="sync-final-note"><strong>Después de aplicar:</strong> exportá la bóveda. En el otro dispositivo, abrí esta misma función y elegí <strong>Fusionar copia</strong> con el archivo nuevo.</p>
+        <div class="modal-actions">
+          <button id="cancelSyncPreviewButton" class="button secondary" type="button">Cancelar</button>
+          <button id="applySyncButton" class="button primary" type="button">Aplicar fusión</button>
         </div>
       </div>
     </dialog>

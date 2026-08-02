@@ -1,6 +1,6 @@
 # Bóveda local
 
-Una bóveda de contraseñas que funciona sin cuenta ni servidor. Los datos quedan en el navegador donde se crean; el proyecto no transmite ni sincroniza contraseñas.
+Una bóveda de contraseñas que funciona sin cuenta ni servidor. Los datos quedan en cada navegador y PWM nunca los transmite por su cuenta. La sincronización entre dispositivos es manual y se realiza con copias cifradas elegidas por el usuario.
 
 ## Uso
 
@@ -14,6 +14,20 @@ Cuando agregás, modificás o eliminás una contraseña, PWM muestra un aviso ur
 PWM no marca una copia como realizada sólo por haber iniciado una descarga. Si el navegador permite elegir el destino, espera a que el archivo termine de escribirse y lo comprueba. En navegadores que sólo ofrecen descargas, PWM mantiene el aviso pendiente y pide seleccionar de nuevo la copia recién guardada antes de confirmarla. Si no podés comprobarla, el estado seguro es que el respaldo sigue pendiente.
 
 Si intentás cerrar, recargar o salir del sitio con una copia pendiente, el navegador mostrará su confirmación nativa de cambios sin guardar. Dentro de PWM, bloquear, volver al inicio o borrar una bóveda también ofrecen exportar antes de continuar. Estos avisos son una última barrera: el navegador puede permitir que sigas sin copia y no reemplazan el respaldo.
+
+### Sincronizar PC y teléfono
+
+**Sincronizar** combina los cambios hechos por separado en dos dispositivos sin reemplazar ciegamente una bóveda completa. El flujo es manual porque PWM no usa cuentas ni un servidor central:
+
+1. En el teléfono, exportá una copia cifrada reciente de la bóveda.
+2. Llevá ese archivo al PC por el medio que prefieras y, con la misma bóveda abierta, elegí **Sincronizar → Fusionar copia**.
+3. Revisá el resumen. Los cambios independientes se combinan automáticamente. Si ambos dispositivos modificaron la misma credencial, o uno la eliminó mientras el otro la editaba, PWM exige que elijas qué versión conservar. Las contraseñas no se muestran en esa pantalla.
+4. Aplicá la fusión y exportá inmediatamente la bóveda resultante.
+5. En el teléfono, abrí esa misma bóveda y repetí **Sincronizar → Fusionar copia** con el archivo nuevo. Así ambos dispositivos terminan con el mismo estado.
+
+PWM sólo acepta copias que pertenezcan exactamente a la bóveda abierta. El archivo se procesa localmente y no se sube a internet. La clave maestra y el archivo llave USB de cada dispositivo no se reemplazan durante la fusión. Las modificaciones usan contadores por dispositivo, no la hora del reloj, y las eliminaciones viajan cifradas para que una credencial borrada no reaparezca al sincronizar.
+
+Antes de aplicar, PWM muestra cuántas credenciales se agregarán, actualizarán o eliminarán. La última fusión puede deshacerse mientras no hagas otro cambio en la bóveda; el punto de restauración queda cifrado localmente y se elimina automáticamente con la siguiente modificación.
 
 ### Archivo llave en pendrive (opcional)
 
