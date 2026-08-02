@@ -105,30 +105,32 @@ const PASSWORD_CHARACTER_GROUPS = Object.freeze({
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VAULT_AS_KEY_MESSAGE = 'Ese archivo es una bóveda, no una llave USB. Usá “Importar bóveda”.';
 const KEY_AS_VAULT_MESSAGE = 'Ese archivo es una llave USB, no una bóveda. Usá “Importar llave”.';
+const BACKUP_REQUIRED_TITLE = 'Se requiere crear una copia de su bóveda, lo antes posible';
+const BACKUP_FOLDER_RECOMMENDATION = 'Recomendamos guardar las copias de todas tus bóvedas en una misma carpeta dedicada y mantener los archivos llave separados.';
 const BACKUP_REMINDERS = Object.freeze({
   credentials: {
-    title: 'Copia urgente requerida',
+    title: BACKUP_REQUIRED_TITLE,
     text: 'Cambiaste contraseñas. Exportá la bóveda y guardá la copia nueva en tu USB ahora. Si perdés este navegador antes, podrías perder credenciales recientes.',
   },
   favorites: {
-    title: 'Copia urgente requerida',
+    title: BACKUP_REQUIRED_TITLE,
     text: 'Actualizaste tus favoritos. Exportá la bóveda y guardá la copia nueva en tu USB para conservar este orden.',
   },
   master: {
-    title: 'Actualizá tu respaldo antes de continuar',
+    title: BACKUP_REQUIRED_TITLE,
     text: 'Cambiaste la clave maestra. Es necesario exportar la bóveda a tu USB ahora: las copias previas sólo abrirán con la clave anterior.',
   },
   usb: {
-    title: 'Es necesario exportar la bóveda ahora',
+    title: BACKUP_REQUIRED_TITLE,
     text: 'Cambiaste la llave USB. Guardá una copia nueva en tu USB.',
     criticalText: 'Sin una copia nueva, tu llave actual no abrirá tus respaldos.',
   },
   migration: {
-    title: 'Copia urgente requerida',
+    title: BACKUP_REQUIRED_TITLE,
     text: 'La bóveda se actualizó. Exportá una copia nueva a tu USB para conservar un respaldo compatible.',
   },
   sync: {
-    title: 'Exportá la bóveda sincronizada ahora',
+    title: BACKUP_REQUIRED_TITLE,
     text: 'Combinaste cambios de otro dispositivo. Guardá una copia nueva. Después, en el otro dispositivo usá Sincronizar → Fusionar copia para que ambos queden iguales.',
   },
 });
@@ -1688,6 +1690,10 @@ function updateBackupReminder() {
     const lead = document.createElement('span');
     lead.textContent = reminder.text;
     text.append(lead);
+    const folderRecommendation = document.createElement('span');
+    folderRecommendation.className = 'backup-folder-recommendation';
+    folderRecommendation.textContent = BACKUP_FOLDER_RECOMMENDATION;
+    text.append(folderRecommendation);
     if (reminder.criticalText) {
       const critical = document.createElement('strong');
       critical.className = 'backup-reminder-critical';
@@ -1727,7 +1733,7 @@ function warnBeforeLeavingWithPendingBackup(event) {
   state.leaveBackupReminderTimer = window.setTimeout(() => {
     state.leaveBackupReminderTimer = null;
     if (!document.hidden && hasPendingBackups()) {
-      window.alert('Por favor, respaldá tu bóveda en el USB antes de irte. Esto evita que puedas perder el acceso por accidente.');
+      window.alert(`${BACKUP_REQUIRED_TITLE}\n\n${BACKUP_FOLDER_RECOMMENDATION}`);
     }
   }, 0);
   event.preventDefault();

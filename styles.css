@@ -145,6 +145,7 @@ textarea { resize: vertical; }
 .backup-reminder-copy { min-width: 0; flex: 1; }
 .backup-reminder-copy > strong, .backup-reminder-text > span, .backup-reminder-critical { display: block; }
 .backup-reminder-text > span { margin-top: .12rem; color: #92400e; line-height: 1.4; }
+.backup-reminder-text > .backup-folder-recommendation { margin-top: .38rem; font-weight: 700; }
 .backup-reminder-critical { margin-top: .48rem; padding-top: .48rem; border-top: 1px solid #f0c36a; color: #78350f; font-size: .86rem; font-weight: 850; line-height: 1.35; }
 .backup-reminder-close { display: grid; flex: 0 0 auto; width: 2rem; height: 2rem; place-items: center; border: 0; border-radius: .45rem; background: transparent; color: inherit; opacity: .68; }
 .backup-reminder-close:hover { background: #f59e0b20; opacity: 1; }
