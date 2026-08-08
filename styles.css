@@ -139,8 +139,9 @@ textarea { resize: vertical; }
 .toolbar-actions .button { min-height: 2.45rem; padding: .5rem .7rem; }
 
 @media (min-width: 761px) {
-  .toolbar-actions { justify-content: flex-start; gap: .45rem; }
+  .toolbar-actions { justify-content: flex-start; gap: .35rem; }
   .toolbar-actions .toolbar-group { display: contents; }
+  .toolbar-actions .button { padding: .48rem .58rem; }
   .vault-session-actions { margin-left: 0; }
 }
 
