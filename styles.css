@@ -137,6 +137,13 @@ textarea { resize: vertical; }
 .toolbar-group { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; }
 .vault-session-actions { margin-left: auto; }
 .toolbar-actions .button { min-height: 2.45rem; padding: .5rem .7rem; }
+
+@media (min-width: 761px) {
+  .toolbar-actions { justify-content: flex-start; gap: .45rem; }
+  .toolbar-actions .toolbar-group { display: contents; }
+  .vault-session-actions { margin-left: 0; }
+}
+
 #exportButton.backup-due { border-color: #d97706; background: #fffbeb; color: #92400e; box-shadow: 0 0 0 3px #f59e0b30; animation: backup-export-pulse 1.1s ease-in-out infinite; }
 #exportButton.backup-due:hover { border-color: #b45309; background: #fef3c7; }
 .backup-reminder { display: flex; align-items: center; gap: .75rem; margin: -.25rem 0 1rem; border: 1px solid #f0c36a; border-radius: .75rem; padding: .75rem .9rem; background: #fffbeb; color: #78350f; font-size: .84rem; }
